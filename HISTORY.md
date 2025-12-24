@@ -13,5 +13,7 @@
 - Added `execution_history/` folder for completed sprint writeups (index + template).
 - Added repo links to `execution_history/` from `README.md` and `docs/index.md`.
 - Started tracking `.cursor/rules/` in git and ignored the rest of `.cursor/` (keeping `.cursor/commons/` and `.cursor/plans/` allowed).
+- Added link to the Notion database used for Tasks CRUD testing.
+- Added local Compose scaffold for Postgres and n8n under `infra/`.
 
 

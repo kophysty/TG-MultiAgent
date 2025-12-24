@@ -1,0 +1,52 @@
+name: tg-multiagent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-multiagent-postgres
+    restart: unless-stopped
+    environment:
+      # Use values from your local .env when running docker compose, or override here.
+      POSTGRES_DB: ${POSTGRES_DB:-tg_multiagent}
+      POSTGRES_USER: ${POSTGRES_USER:-tg_multiagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg_multiagent_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - tg_multiagent_postgres_data:/var/lib/postgresql/data
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: tg-multiagent-n8n
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      # Basic auth (recommended for local networks too).
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-admin}
+
+      # Encryption key for credentials.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-me}
+
+      # Minimal DB wiring. You can switch to Postgres later if needed.
+      DB_TYPE: ${N8N_DB_TYPE:-sqlite}
+
+      # If you want Postgres for n8n, set:
+      # N8N_DB_TYPE=postgresdb
+      # DB_POSTGRESDB_HOST=postgres
+      # DB_POSTGRESDB_PORT=5432
+      # DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-tg_multiagent}
+      # DB_POSTGRESDB_USER=${POSTGRES_USER:-tg_multiagent}
+      # DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-tg_multiagent_dev}
+    ports:
+      - "5678:5678"
+    volumes:
+      - tg_multiagent_n8n_data:/home/node/.n8n
+
+volumes:
+  tg_multiagent_postgres_data:
+  tg_multiagent_n8n_data:
+
+

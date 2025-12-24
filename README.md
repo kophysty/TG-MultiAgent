@@ -5,6 +5,7 @@ Telegram агент, который работает с Notion как с пер�
 ## Первоисточник (single source of truth)
 
 - [Base structure (Notion)](https://www.notion.so/web3-future/Base-structure-2d1535c900f08016af17ca1d92c5c9de?t=2d3535c900f0805e884300a99586f20f)
+- [Tasks Base MultiAgent (Notion DB, CRUD тесты)](https://www.notion.so/web3-future/2d3535c900f0818ebc77fd1fd3d9d6fa?v=2d3535c900f081a9b471000c17d2423e&source=copy_link)
 
 Если в репозитории и Notion есть расхождение - сначала правим Notion, затем обновляем `docs/`.
 
@@ -12,6 +13,22 @@ Telegram агент, который работает с Notion как с пер�
 
 - [docs/index.md](./docs/index.md)
 - [execution_history/index.md](./execution_history/index.md)
+
+## Боты
+
+- **Prod**: `@my_temp_todo_bot`
+- **Tests**: `@todofortests_bot`
+
+В dev мы начинаем с polling (Bot API `getUpdates`): для этого достаточно токенов ботов в `.env`, отдельное подключение Telegram аккаунта не нужно.
+
+## Dev: polling (как будем тестировать)
+
+- **Что нужно**: токен бота (у тебя уже добавлены), локальный процесс, который опрашивает Telegram.
+- **Важно**: у одного бота не должно быть одновременно активного webhook и polling consumer. Если бот раньше работал с webhook - сначала сбрось webhook.
+
+## Docker (postgres + n8n)
+
+Docker Compose лежит в `infra/docker-compose.yml`.
 
 ## TL;DR (что важно из Notion)
 

@@ -5,6 +5,7 @@
 Первоисточник архитектуры и решений - страница Notion:
 
 - [Base structure (Notion)](https://www.notion.so/web3-future/Base-structure-2d1535c900f08016af17ca1d92c5c9de?t=2d3535c900f0805e884300a99586f20f)
+- [Tasks Base MultiAgent (Notion DB, CRUD тесты)](https://www.notion.so/web3-future/2d3535c900f0818ebc77fd1fd3d9d6fa?v=2d3535c900f081a9b471000c17d2423e&source=copy_link)
 
 Репозиторий содержит структурированную выжимку и рабочие заметки по этой странице. Если возникает расхождение - считаем Notion первичным, затем обновляем `docs/`.
 
