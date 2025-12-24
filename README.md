@@ -65,3 +65,28 @@ Docker Compose лежит в `infra/docker-compose.yml`.
 
 - **Dev (сейчас)**: код запускаем локально, зависимости (Postgres) можно поднимать в Docker по мере необходимости.
 - **Prod (потом)**: собираем Docker Compose с `agent-core`, `worker`, `postgres` (и опционально n8n).
+
+## Запуск (dev, polling, без AI)
+
+1) Установить зависимости Node (todo bot):
+
+```bash
+cd apps/todo_bot
+npm install
+```
+
+2) Настроить `.env`:
+
+- Переменные (рекомендуется):
+  - `TELEGRAM_BOT_TOKEN_TESTS` (для `@todofortests_bot`)
+  - `TELEGRAM_BOT_TOKEN_PROD` (для `@my_temp_todo_bot`)
+  - `NOTION_TOKEN`
+  - `NOTION_TASKS_DB_ID` (по умолчанию `Tasks Base MultiAgent`: `2d3535c900f0818ebc77fd1fd3d9d6fa`)
+- Для совместимости с твоим текущим `.env` поддержан и "человеческий" формат: бот пытается извлечь токены из строк, где упоминаются `@todofortests_bot`, `@my_temp_todo_bot` и Notion.
+
+3) Запустить бот:
+
+```bash
+cd apps/todo_bot
+TG_BOT_MODE=tests npm start
+```

@@ -37,3 +37,6 @@ venv/
 !.cursor/plans
 !.cursor/plans/**
 
+
+# Sources
+sources/

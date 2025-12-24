@@ -15,5 +15,6 @@
 - Started tracking `.cursor/rules/` in git and ignored the rest of `.cursor/` (keeping `.cursor/commons/` and `.cursor/plans/` allowed).
 - Added link to the Notion database used for Tasks CRUD testing.
 - Added local Compose scaffold for Postgres and n8n under `infra/`.
+- Added Node.js polling todo bot scaffold under `apps/todo_bot/` (inline menus + Notion CRUD) based on legacy `TG-Notion-todo-bot`.
 
 
