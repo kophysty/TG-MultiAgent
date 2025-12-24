@@ -16,5 +16,7 @@
 - Added link to the Notion database used for Tasks CRUD testing.
 - Added local Compose scaffold for Postgres and n8n under `infra/`.
 - Added Node.js polling todo bot scaffold under `apps/todo_bot/` (inline menus + Notion CRUD) based on legacy `TG-Notion-todo-bot`.
+- Added OpenAI integration (AI MVP) behind `TG_AI=1`: classify message as question vs task, summarize parsed task, confirm/cancel, and create task in Notion.
+- Updated env loader to parse `.env` `KEY=VALUE` from repo root so `OPENAI_API_KEY` works when launching from `apps/todo_bot/`.
 
 

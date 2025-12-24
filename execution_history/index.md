@@ -19,4 +19,8 @@ This folder contains completed sprint writeups.
 
 Use: `execution_history/sprint_template.md`
 
+## Completed sprints
+
+- `2025-12-25_ai_mvp.md` - AI MVP inside polling todo bot (no n8n)
+
 

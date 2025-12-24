@@ -1,5 +1,23 @@
 const crypto = require('crypto');
 const moment = require('moment');
+const { aiAnalyzeMessage } = require('../ai/todo_intent');
+
+function isDebugEnabled() {
+  const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function isAiEnabled() {
+  const v = String(process.env.TG_AI || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function debugLog(event, fields = {}) {
+  if (!isDebugEnabled()) return;
+  // Never log secrets. Keep payloads small and mostly metadata.
+  // eslint-disable-next-line no-console
+  console.log(`[tg_debug] ${event}`, fields);
+}
 
 function makeId(text) {
   return crypto.createHash('md5').update(text).digest('hex').slice(0, 8);
@@ -63,7 +81,40 @@ function buildDateKeyboard({ taskId, category, pmd, priority }) {
   return { reply_markup: { inline_keyboard: keyboard } };
 }
 
+function buildAiConfirmKeyboard({ draftId }) {
+  const rows = [
+    [
+      { text: 'Подтвердить', callback_data: `ai:confirm:${draftId}`.slice(0, 64) },
+      { text: 'Отмена', callback_data: `ai:cancel:${draftId}`.slice(0, 64) },
+    ],
+  ];
+  return { reply_markup: { inline_keyboard: rows } };
+}
+
+function formatAiTaskSummary(task) {
+  const title = task?.title || '(без названия)';
+  const dueDate = task?.dueDate || 'не указана';
+  const priority = task?.priority || 'не указан';
+  const pmd = typeof task?.pmd === 'number' ? String(task.pmd) : 'не указан';
+  const tag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
+
+  const lines = [
+    'Я понял задачу так:',
+    `- Название: ${title}`,
+    `- Дата: ${dueDate}`,
+    `- Приоритет: ${priority}`,
+    `- PMD: ${pmd}`,
+    `- Категория: ${tag || 'не указана'}`,
+    '',
+    'Верно?',
+    'Если нужно поправить, просто напиши исправление текстом.',
+  ];
+
+  return lines.join('\n');
+}
+
 async function registerTodoBot({ bot, notionRepo, databaseId }) {
+  debugLog('bot_init', { databaseId: String(databaseId) });
   const { tags: categoryOptions, priority: priorityOptions } = await notionRepo.getOptions();
 
   const TASK_CATEGORIES = categoryOptions.length ? categoryOptions : ['Today', 'Work', 'Home', 'Global', 'Everyday', 'Personal', 'Inbox'];
@@ -81,6 +132,21 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     date: new Set(),
   };
 
+  // AI: in-memory drafts, no persistence yet.
+  const aiDraftByChatId = new Map(); // chatId -> { id, task, updatedAt, awaitingConfirmation }
+  const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
+  const tz = process.env.TG_TZ || 'Europe/Moscow';
+  const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1-mini';
+  const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
+
+  function normalizePriorityForDb(priority) {
+    if (!priority) return null;
+    if (PRIORITY_SET.has(priority)) return priority;
+    // Common mismatch: "Medium" vs "Med"
+    if (priority === 'Medium' && PRIORITY_SET.has('Med')) return 'Med';
+    return null;
+  }
+
   function clearTimer(chatId) {
     const t = timers.get(chatId);
     if (t) clearTimeout(t);
@@ -89,6 +155,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/start', from: msg.from?.username || null });
     const opts = {
       reply_markup: {
         keyboard: [[{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: '/struct' }]],
@@ -100,7 +167,9 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
   bot.onText(/\/struct/, async (msg) => {
     const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/struct', from: msg.from?.username || null });
     try {
+      debugLog('notion_call', { op: 'getDatabase' });
       const db = await notionRepo.getDatabase();
       const props = db.properties || {};
       const lines = ['Structure of DB:\n'];
@@ -115,14 +184,18 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
   bot.onText(/\/addtask/, (msg) => {
     const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/addtask', from: msg.from?.username || null });
     pendingTask.set(chatId, { id: null, text: null });
     bot.sendMessage(chatId, 'Please enter your new task:');
   });
 
   bot.onText(/\/list/, async (msg) => {
     const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/list', from: msg.from?.username || null });
     try {
+      debugLog('notion_call', { op: 'listTasks' });
       const tasks = await notionRepo.listTasks();
+      debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const active = tasks.filter((t) => String(t.status || '').toLowerCase() !== 'done');
 
       if (!active.length) {
@@ -165,8 +238,11 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
   bot.onText(/\/today/, async (msg) => {
     const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/today', from: msg.from?.username || null });
     try {
+      debugLog('notion_call', { op: 'listTasks' });
       const tasks = await notionRepo.listTasks();
+      debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const today = moment().startOf('day');
 
       const todayTasks = tasks.filter((t) => t.tags.includes('Today') && t.status !== 'Done');
@@ -211,39 +287,173 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    if (!pendingTask.has(chatId)) return;
-    if (!msg.text || msg.text.startsWith('/')) return;
+    const from = msg.from?.username || null;
+
+    // Ignore commands here (handled by onText handlers).
+    if (msg.text && msg.text.startsWith('/')) return;
+
+    // Manual /addtask flow (existing behavior).
+    if (pendingTask.has(chatId)) {
+      if (!msg.text) return;
+      const text = msg.text.trim();
+      if (!text) return;
+
+      debugLog('incoming_task_text', {
+        chatId,
+        from,
+        text_len: text.length,
+        text_preview: text.slice(0, 32),
+      });
+
+      const id = makeId(text);
+      pendingTask.set(chatId, { id, text });
+      taskTextById.set(id, text);
+
+      const truncated = truncate(text, 24);
+      const kb = buildCategoryKeyboard({ categories: TASK_CATEGORIES, taskId: id });
+      bot.sendMessage(chatId, `Choose a category for the task \"${truncated}\":`, kb);
+
+      clearTimer(chatId);
+      timers.set(
+        chatId,
+        setTimeout(async () => {
+          try {
+            debugLog('notion_call', { op: 'createTask', tag: 'Today', status: 'Idle' });
+            await notionRepo.createTask({ title: text, tag: 'Today', status: 'Idle' });
+            debugLog('notion_result', { op: 'createTask', ok: true });
+            bot.sendMessage(chatId, `Category selection time expired. Task \"${truncated}\" has been added with the \"Today\" tag.`);
+          } catch {
+            debugLog('notion_result', { op: 'createTask', ok: false });
+            bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
+          } finally {
+            pendingTask.delete(chatId);
+            clearTimer(chatId);
+          }
+        }, 30_000)
+      );
+      return;
+    }
+
+    // AI: ignore non-text messages for now.
+    if (!msg.text) return;
+
+    if (!isAiEnabled()) return;
+
     const text = msg.text.trim();
     if (!text) return;
 
-    const id = makeId(text);
-    pendingTask.set(chatId, { id, text });
-    taskTextById.set(id, text);
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      bot.sendMessage(chatId, 'AI включен, но OPENAI_API_KEY не найден. Проверь .env.');
+      return;
+    }
 
-    const truncated = truncate(text, 24);
-    const kb = buildCategoryKeyboard({ categories: TASK_CATEGORIES, taskId: id });
-    bot.sendMessage(chatId, `Choose a category for the task \"${truncated}\":`, kb);
+    const existingDraft = aiDraftByChatId.get(chatId) || null;
+    const priorTaskDraft = existingDraft?.task || null;
 
-    clearTimer(chatId);
-    timers.set(
+    debugLog('ai_call', {
+      model: aiModel,
+      tz,
       chatId,
-      setTimeout(async () => {
-        try {
-          await notionRepo.createTask({ title: text, tag: 'Today', status: 'Idle' });
-          bot.sendMessage(chatId, `Category selection time expired. Task \"${truncated}\" has been added with the \"Today\" tag.`);
-        } catch {
-          bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-        } finally {
-          pendingTask.delete(chatId);
-          clearTimer(chatId);
-        }
-      }, 30_000)
-    );
+      from,
+      has_prior_draft: Boolean(priorTaskDraft),
+      text_len: text.length,
+      text_preview: text.slice(0, 48),
+    });
+
+    try {
+      const { normalized } = await aiAnalyzeMessage({
+        apiKey,
+        model: aiModel,
+        tz,
+        nowIso: new Date().toISOString(),
+        userText: text,
+        priorTaskDraft,
+      });
+
+      debugLog('ai_result', { type: normalized.type });
+
+      if (normalized.type === 'question') {
+        bot.sendMessage(chatId, normalized.question.answer);
+        return;
+      }
+
+      const draftId = existingDraft?.id || makeId(`${chatId}:${Date.now()}:${normalized.task.title}`);
+      const task = normalized.task;
+
+      const draft = {
+        id: draftId,
+        task,
+        updatedAt: Date.now(),
+        awaitingConfirmation: true,
+      };
+
+      aiDraftByChatId.set(chatId, draft);
+      aiDraftById.set(draftId, { ...draft, chatId });
+
+      const kb = buildAiConfirmKeyboard({ draftId });
+      bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
+    } catch (e) {
+      debugLog('ai_error', { message: String(e?.message || e) });
+      bot.sendMessage(chatId, 'Не получилось обработать сообщение через AI. Попробуй еще раз или используй /addtask.');
+    }
   });
 
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const action = query.data;
+    debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
+
+    if (action && action.startsWith('ai:')) {
+      const [, act, draftId] = action.split(':');
+      const entry = aiDraftById.get(draftId);
+
+      if (!entry || entry.chatId !== chatId) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Черновик не найден или устарел. Напиши задачу еще раз.');
+        return;
+      }
+
+      if (act === 'cancel') {
+        aiDraftById.delete(draftId);
+        aiDraftByChatId.delete(chatId);
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Ок, отменил.');
+        return;
+      }
+
+      if (act === 'confirm') {
+        const task = entry.task;
+        const tag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
+        const priority = normalizePriorityForDb(task.priority ?? null);
+
+        try {
+          debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
+          await notionRepo.createTask({
+            title: task.title,
+            tag,
+            pmd: task.pmd ?? null,
+            priority,
+            dueDate: task.dueDate ?? null,
+            status: 'Idle',
+          });
+          debugLog('notion_result', { op: 'createTask', ok: true });
+          bot.sendMessage(chatId, 'Готово, добавил задачу в Notion.');
+        } catch {
+          debugLog('notion_result', { op: 'createTask', ok: false });
+          bot.sendMessage(chatId, 'Не получилось создать задачу в Notion. Попробуй еще раз.');
+        } finally {
+          aiDraftById.delete(draftId);
+          aiDraftByChatId.delete(chatId);
+        }
+
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
 
     if (action === 'ignore') {
       bot.answerCallbackQuery(query.id);
@@ -274,9 +484,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
             if (!waitingFor.pmd.has(chatId)) return;
             waitingFor.pmd.delete(chatId);
             try {
+              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
               await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
+              debugLog('notion_result', { op: 'createTask', ok: true });
               bot.sendMessage(chatId, `PMD selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with no PMD/priority/due date.`);
             } catch {
+              debugLog('notion_result', { op: 'createTask', ok: false });
               bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
             } finally {
               pendingTask.delete(chatId);
@@ -298,9 +511,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
             if (!waitingFor.date.has(chatId)) return;
             waitingFor.date.delete(chatId);
             try {
+              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
               await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
+              debugLog('notion_result', { op: 'createTask', ok: true });
               bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" without due date.`);
             } catch {
+              debugLog('notion_result', { op: 'createTask', ok: false });
               bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
             } finally {
               pendingTask.delete(chatId);
@@ -313,9 +529,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       }
 
       try {
+        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
         await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
+        debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\".`);
       } catch {
+        debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
       } finally {
         pendingTask.delete(chatId);
@@ -344,9 +563,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
           if (!waitingFor.priority.has(chatId)) return;
           waitingFor.priority.delete(chatId);
           try {
+            debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
             await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, status: 'Idle' });
+            debugLog('notion_result', { op: 'createTask', ok: true });
             bot.sendMessage(chatId, `Priority selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'}.`);
           } catch {
+            debugLog('notion_result', { op: 'createTask', ok: false });
             bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
           } finally {
             pendingTask.delete(chatId);
@@ -381,9 +603,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
             if (!waitingFor.date.has(chatId)) return;
             waitingFor.date.delete(chatId);
             try {
+              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
               await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority: finalPriority, status: 'Idle' });
+              debugLog('notion_result', { op: 'createTask', ok: true });
               bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'} and Priority: ${finalPriority || 'not set'}.`);
             } catch {
+              debugLog('notion_result', { op: 'createTask', ok: false });
               bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
             } finally {
               pendingTask.delete(chatId);
@@ -397,9 +622,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       }
 
       try {
+        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
         await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority: finalPriority, status: 'Idle' });
+        debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'} and Priority: ${finalPriority || 'not set'}.`);
       } catch {
+        debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
       } finally {
         pendingTask.delete(chatId);
@@ -423,9 +651,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       const dueDate = String(dateString).toLowerCase() === 'skip' ? null : dateString;
 
       try {
+        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
         await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority, dueDate, status: 'Idle' });
+        debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'}, Priority: ${priority || 'not set'}, Due Date: ${dueDate || 'not set'}.`);
       } catch {
+        debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
       } finally {
         pendingTask.delete(chatId);
@@ -443,6 +674,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     // Do not crash on transient errors.
     // eslint-disable-next-line no-console
     console.error('Polling error:', error);
+    debugLog('polling_error', { code: error?.code || null, message: String(error?.message || '') });
     if (error.code === 'EFATAL') {
       setTimeout(() => {
         bot.stopPolling().then(() => bot.startPolling());
