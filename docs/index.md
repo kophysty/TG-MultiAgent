@@ -10,6 +10,7 @@
 
 ## Оглавление
 
+- [Execution history](../execution_history/index.md)
 - [Стек и деплой](./stack-and-deploy.md)
 - [N8N (осторожная интеграция)](./n8n.md)
 - [Разделение обязанностей](./responsibilities.md)

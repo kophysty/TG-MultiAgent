@@ -28,3 +28,12 @@ venv/
 # IDE
 .idea/
 
+# Cursor project settings
+.cursor/*
+!.cursor/rules
+!.cursor/rules/**
+!.cursor/commons
+!.cursor/commons/**
+!.cursor/plans
+!.cursor/plans/**
+

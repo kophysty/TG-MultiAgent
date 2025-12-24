@@ -11,6 +11,7 @@ Telegram агент, который работает с Notion как с пер�
 ## Документация в репозитории
 
 - [docs/index.md](./docs/index.md)
+- [execution_history/index.md](./execution_history/index.md)
 
 ## TL;DR (что важно из Notion)
 

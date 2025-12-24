@@ -1,0 +1,43 @@
+# Terminal Policy — Git Bash Priority, WSL Fallback
+
+## Terminal policy
+- Purpose: Ensure all Agents and Codex terminal actions run via Git Bash as main (priority), and  WSL as alternative if bugs, troubles or direct command by the user.
+
+Rules
+- **Priority 1**: Use Git Bash for all commands, reads, and edits when available.
+- **Priority 2**: Fallback to WSL Ubuntu Bash if Git Bash is unavailable or fails.
+- Command bridge format for WSL: `wsl -d Ubuntu bash -lc "<command>"` when invoking from Windows contexts.
+- Do not use PowerShell or cmd for execution, file I/O, or tooling unless the user explicitly permits a temporary fallback.
+- Always assume UTF‑8 locale: set `LANG=C.UTF-8 LC_ALL=C.UTF-8` for scripted runs when output encoding matters.
+- Path mapping: Windows `D:\YandexDisk\.Dev\RDS` ↔ WSL `/mnt/d/YandexDisk/.Dev/RDS`.
+
+Notes
+- This file documents execution expectations; it does not modify editor settings. 
+- Recommended profile priority: Git Bash first, then WSL Ubuntu as fallback.
+- For WSL: Windows Terminal/VS Code profile pointing to `C:\\Windows\\System32\\wsl.exe` with args `-d Ubuntu`.
+- Use PowerShell only direct command from user
+
+Troubleshooting & Recipes
+
+**Git Bash (Priority)**
+- Default path: `C:\Program Files\Git\bin\bash.exe`
+- Environment variable: `CLAUDE_CODE_GIT_BASH_PATH` is set to `C:/Program Files/Git/bin/bash.exe`
+- UTF‑8 support: Git Bash handles UTF‑8 by default, no special configuration needed.
+- Direct execution: Commands run directly in Git Bash environment.
+- Configuration: Variable is permanently set in `~/.bashrc` for all sessions.
+
+**WSL Ubuntu (Fallback)**
+- Select distro explicitly: `wsl -l -v` to list; use `wsl -d Ubuntu` to avoid landing in `docker-desktop`.
+- UTF‑8 everywhere: prefix scripts with `export LANG=C.UTF-8 LC_ALL=C.UTF-8` when output contains Cyrillic.
+- Robust read: `wsl -d Ubuntu bash -lc "export LANG=C.UTF-8 LC_ALL=C.UTF-8; sed -n '1,200p' /mnt/d/YandexDisk/.Dev/RDS/docs/Rulebook/DB_readme.md"`.
+- Robust write (multi‑line, UTF‑8, special chars):
+  `wsl -d Ubuntu bash -lc "cat >/mnt/d/YandexDisk/.Dev/RDS/docs/test_ru.md <<'EOF'
+  <content>
+  EOF"`
+  Rationale: here‑doc with quoted EOF avoids nested quoting issues across Windows→WSL boundaries; safer than `printf` for Cyrillic/emoji.
+- Avoid WindowsApps `bash.exe`: launching `C:\\Users\\<user>\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe` may fail with `execvpe(/bin/bash) failed` if no distro is set; prefer `wsl.exe -d Ubuntu`.
+
+Bracketing/Paste mode errors
+- If terminal prints `[200~bash:` or similar bracketed‑paste artifacts when running a command:
+  1) Disable bracketed paste temporarily: `printf '\e[?2004l'` and re‑run the command.
+  2) If it repeats, run: `bind 'set enable-bracketed-paste off'` and try again.
