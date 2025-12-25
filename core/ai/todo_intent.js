@@ -15,7 +15,8 @@ function clampPreview(text, maxLen) {
   return `${t.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
-function buildSystemPrompt({ tz, nowIso }) {
+function buildSystemPrompt({ tz, nowIso, allowedCategories }) {
+  const categories = Array.isArray(allowedCategories) ? allowedCategories.filter((c) => typeof c === 'string' && c.trim()) : [];
   return [
     'You are a Telegram assistant inside a to-do bot.',
     'Your job: classify the user message as either a QUESTION or a TASK for Notion, and return STRICT JSON.',
@@ -25,8 +26,13 @@ function buildSystemPrompt({ tz, nowIso }) {
     '- Output language for user-facing fields must be Russian.',
     '- If it is a question: provide a short helpful answer in Russian.',
     '- If it is a task: extract fields (title, dueDate, priority). If missing, set null.',
+    '- If it is a task: you MUST choose exactly ONE category from the allowed list below and return it as task.tags = [\"<category>\"].',
+    '- NEVER invent new categories. If unsure, choose "Inbox".',
     '- Interpret relative dates using timezone: ' + tz,
     '- Current datetime ISO (for reference): ' + nowIso,
+    '',
+    'Allowed categories (choose exactly one, or Inbox when unsure):',
+    categories.length ? categories.map((c) => `- ${c}`).join('\n') : '- Inbox',
     '',
     'Schema:',
     '{',
@@ -88,8 +94,9 @@ async function aiAnalyzeMessage({
   nowIso = new Date().toISOString(),
   userText,
   priorTaskDraft,
+  allowedCategories,
 }) {
-  const system = buildSystemPrompt({ tz, nowIso });
+  const system = buildSystemPrompt({ tz, nowIso, allowedCategories });
 
   const userParts = [];
   userParts.push('User message:');

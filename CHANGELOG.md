@@ -14,5 +14,7 @@ All notable changes to this project will be documented in this file.
 - Started tracking `.cursor/rules/` in git while ignoring the rest of `.cursor/` (except `.cursor/commons/` and `.cursor/plans/`).
 - Added OpenAI-powered AI MVP behind `TG_AI=1` to classify question vs task, summarize a parsed task, and create it in Notion on confirmation.
 - Updated env loader to parse standard `.env` `KEY=VALUE` entries (e.g. `OPENAI_API_KEY`) from repo root.
+- Constrained AI to use only existing Notion `Tags` categories (excluding `Deprecated`) and added `Today` (UI) alias to `Inbox` (Notion tag).
+- Added bot version output to `/start` and reorganized docs into `docs/roadmap/` and `docs/current/`.
 
 

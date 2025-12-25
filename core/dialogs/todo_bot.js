@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const moment = require('moment');
 const { aiAnalyzeMessage } = require('../ai/todo_intent');
+const todoBotPkg = require('../../apps/todo_bot/package.json');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -27,6 +28,38 @@ function truncate(text, maxLen) {
   if (!text) return '';
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 3)}...`;
+}
+
+function normalizeCategoryInput(category) {
+  const c = String(category || '').trim();
+  if (!c) return null;
+  if (c.toLowerCase() === 'deprecated') return null;
+  // UI alias: Today -> Inbox (Notion tag).
+  if (c.toLowerCase() === 'today') return 'Inbox';
+  return c;
+}
+
+function normalizeTagsForDisplay(tags) {
+  const out = [];
+  for (const t of tags || []) {
+    const name = String(t || '').trim();
+    if (!name) continue;
+    if (name.toLowerCase() === 'deprecated') continue;
+    // Display alias: Inbox -> Today (so UX stays familiar).
+    if (name.toLowerCase() === 'inbox') out.push('Today');
+    else out.push(name);
+  }
+  return out;
+}
+
+function isAffirmativeText(text) {
+  const t = String(text || '').trim().toLowerCase();
+  return t === 'да' || t === 'подтверждаю' || t === 'подтвердить' || t === 'ок' || t === 'okay';
+}
+
+function isNegativeText(text) {
+  const t = String(text || '').trim().toLowerCase();
+  return t === 'нет' || t === 'отмена' || t === 'отменить';
 }
 
 function buildCategoryKeyboard({ categories, taskId }) {
@@ -97,6 +130,7 @@ function formatAiTaskSummary(task) {
   const priority = task?.priority || 'не указан';
   const pmd = typeof task?.pmd === 'number' ? String(task.pmd) : 'не указан';
   const tag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
+  const displayTag = tag && String(tag).trim().toLowerCase() === 'inbox' ? 'Today' : tag;
 
   const lines = [
     'Я понял задачу так:',
@@ -104,7 +138,7 @@ function formatAiTaskSummary(task) {
     `- Дата: ${dueDate}`,
     `- Приоритет: ${priority}`,
     `- PMD: ${pmd}`,
-    `- Категория: ${tag || 'не указана'}`,
+    `- Категория: ${displayTag || 'не указана'}`,
     '',
     'Верно?',
     'Если нужно поправить, просто напиши исправление текстом.',
@@ -117,7 +151,13 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
   debugLog('bot_init', { databaseId: String(databaseId) });
   const { tags: categoryOptions, priority: priorityOptions } = await notionRepo.getOptions();
 
-  const TASK_CATEGORIES = categoryOptions.length ? categoryOptions : ['Today', 'Work', 'Home', 'Global', 'Everyday', 'Personal', 'Inbox'];
+  // Categories are dynamic from Notion Tags. Exclude Deprecated from any user-facing menus and AI.
+  const notionCategories = (categoryOptions || []).filter((c) => String(c || '').trim().toLowerCase() !== 'deprecated');
+  const hasInbox = notionCategories.some((c) => String(c || '').trim().toLowerCase() === 'inbox');
+
+  // UI: keep "Today" as an alias for Inbox (even if Today tag does not exist in Notion).
+  // Never show "Deprecated" here.
+  const TASK_CATEGORIES = notionCategories.length ? ['Today', ...notionCategories.filter((c) => String(c || '').trim().toLowerCase() !== 'inbox')] : ['Today', 'Work', 'Home', 'Global', 'Everyday', 'Personal'];
   const PRIORITY_OPTIONS = ['skip', ...priorityOptions.length ? priorityOptions : ['Low', 'Med', 'High']];
   const PMD_OPTIONS = ['skip', '1', '2', '3', '4', '6', '8', '10'];
   const PMD_CATEGORIES = ['Home', 'Work', 'Global', 'Personal'];
@@ -147,6 +187,55 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     return null;
   }
 
+  function defaultFallbackCategory() {
+    // Prefer Inbox if present in Notion options, otherwise null.
+    if (hasInbox) return 'Inbox';
+    return null;
+  }
+
+  async function confirmAiDraft({ chatId, draftId, queryId }) {
+    const entry = aiDraftById.get(draftId);
+    if (!entry || entry.chatId !== chatId) {
+      if (queryId) bot.answerCallbackQuery(queryId);
+      bot.sendMessage(chatId, 'Черновик не найден или устарел. Напиши задачу еще раз.');
+      return;
+    }
+
+    const task = entry.task;
+    const rawTag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
+    const tag = normalizeCategoryInput(rawTag) || defaultFallbackCategory();
+    const priority = normalizePriorityForDb(task.priority ?? null);
+
+    try {
+      debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
+      await notionRepo.createTask({
+        title: task.title,
+        tag,
+        pmd: task.pmd ?? null,
+        priority,
+        dueDate: task.dueDate ?? null,
+        status: 'Idle',
+      });
+      debugLog('notion_result', { op: 'createTask', ok: true });
+      bot.sendMessage(chatId, 'Готово, добавил задачу в Notion.');
+    } catch {
+      debugLog('notion_result', { op: 'createTask', ok: false });
+      bot.sendMessage(chatId, 'Не получилось создать задачу в Notion. Попробуй еще раз.');
+    } finally {
+      aiDraftById.delete(draftId);
+      aiDraftByChatId.delete(chatId);
+    }
+
+    if (queryId) bot.answerCallbackQuery(queryId);
+  }
+
+  function cancelAiDraft({ chatId, draftId, queryId }) {
+    if (draftId) aiDraftById.delete(draftId);
+    aiDraftByChatId.delete(chatId);
+    if (queryId) bot.answerCallbackQuery(queryId);
+    bot.sendMessage(chatId, 'Ок, отменил.');
+  }
+
   function clearTimer(chatId) {
     const t = timers.get(chatId);
     if (t) clearTimeout(t);
@@ -162,7 +251,8 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         resize_keyboard: true,
       },
     };
-    bot.sendMessage(chatId, 'Welcome to TG-MultiAgent To-Do bot (dev).', opts);
+    const version = todoBotPkg?.version ? `v${todoBotPkg.version}` : 'v0.0.0';
+    bot.sendMessage(chatId, `Welcome to TG-MultiAgent To-Do bot (dev). Version: ${version}`, opts);
   });
 
   bot.onText(/\/struct/, async (msg) => {
@@ -196,7 +286,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       debugLog('notion_call', { op: 'listTasks' });
       const tasks = await notionRepo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
-      const active = tasks.filter((t) => String(t.status || '').toLowerCase() !== 'done');
+      const active = tasks.filter((t) => String(t.status || '').toLowerCase() !== 'done' && !t.tags.includes('Deprecated'));
 
       if (!active.length) {
         bot.sendMessage(chatId, 'You have no active tasks in your list.');
@@ -208,10 +298,11 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       groups.Uncategorized = [];
 
       for (const t of active) {
-        if (!t.tags.length) {
+        const displayTags = normalizeTagsForDisplay(t.tags);
+        if (!displayTags.length) {
           groups.Uncategorized.push(t);
         } else {
-          for (const tag of t.tags) {
+          for (const tag of displayTags) {
             if (!groups[tag]) groups[tag] = [];
             groups[tag].push(t);
           }
@@ -245,16 +336,17 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const today = moment().startOf('day');
 
-      const todayTasks = tasks.filter((t) => t.tags.includes('Today') && t.status !== 'Done');
+      const todayTasks = tasks.filter((t) => t.tags.includes('Inbox') && t.status !== 'Done' && !t.tags.includes('Deprecated'));
       const dueToday = tasks.filter(
         (t) =>
-          !t.tags.includes('Today') &&
+          !t.tags.includes('Inbox') &&
           t.status !== 'Done' &&
+          !t.tags.includes('Deprecated') &&
           t.dueDate &&
           moment(t.dueDate, moment.ISO_8601, true).isValid() &&
           moment(t.dueDate).isSame(today, 'day')
       );
-      const highPrio = tasks.filter((t) => !t.tags.includes('Today') && t.status !== 'Done' && t.priority === 'High');
+      const highPrio = tasks.filter((t) => !t.tags.includes('Inbox') && t.status !== 'Done' && !t.tags.includes('Deprecated') && t.priority === 'High');
 
       let out = '*Your tasks for Today:*\n\n';
       if (todayTasks.length) {
@@ -318,10 +410,10 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         chatId,
         setTimeout(async () => {
           try {
-            debugLog('notion_call', { op: 'createTask', tag: 'Today', status: 'Idle' });
-            await notionRepo.createTask({ title: text, tag: 'Today', status: 'Idle' });
+            debugLog('notion_call', { op: 'createTask', tag: 'Inbox', status: 'Idle' });
+            await notionRepo.createTask({ title: text, tag: 'Inbox', status: 'Idle' });
             debugLog('notion_result', { op: 'createTask', ok: true });
-            bot.sendMessage(chatId, `Category selection time expired. Task \"${truncated}\" has been added with the \"Today\" tag.`);
+            bot.sendMessage(chatId, `Category selection time expired. Task \"${truncated}\" has been added to \"Inbox\".`);
           } catch {
             debugLog('notion_result', { op: 'createTask', ok: false });
             bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
@@ -342,14 +434,31 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     const text = msg.text.trim();
     if (!text) return;
 
+    // If a draft is awaiting confirmation, allow text-based confirm/cancel.
+    const existingDraft = aiDraftByChatId.get(chatId) || null;
+    if (existingDraft?.awaitingConfirmation) {
+      if (isAffirmativeText(text)) {
+        await confirmAiDraft({ chatId, draftId: existingDraft.id, queryId: null });
+        return;
+      }
+      if (isNegativeText(text)) {
+        cancelAiDraft({ chatId, draftId: existingDraft.id, queryId: null });
+        return;
+      }
+      // Otherwise treat as correction and re-run AI with prior draft.
+    }
+
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       bot.sendMessage(chatId, 'AI включен, но OPENAI_API_KEY не найден. Проверь .env.');
       return;
     }
 
-    const existingDraft = aiDraftByChatId.get(chatId) || null;
     const priorTaskDraft = existingDraft?.task || null;
+
+    // Allowed categories come from Notion Tags options and exclude Deprecated.
+    // AI must choose exactly one of them, otherwise we will fallback to Inbox.
+    const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
 
     debugLog('ai_call', {
       model: aiModel,
@@ -369,6 +478,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         nowIso: new Date().toISOString(),
         userText: text,
         priorTaskDraft,
+        allowedCategories,
       });
 
       debugLog('ai_result', { type: normalized.type });
@@ -379,7 +489,17 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       }
 
       const draftId = existingDraft?.id || makeId(`${chatId}:${Date.now()}:${normalized.task.title}`);
+
+      // Enforce category constraints and default to Inbox if uncertain.
       const task = normalized.task;
+      const rawAiTag = Array.isArray(task.tags) && task.tags.length ? task.tags[0] : null;
+      const normalizedTag = normalizeCategoryInput(rawAiTag);
+
+      // Case-insensitive match against allowed categories, but keep canonical casing from Notion.
+      const allowedMap = new Map(allowedCategories.map((c) => [String(c).trim().toLowerCase(), c]));
+      const canonical = normalizedTag ? allowedMap.get(String(normalizedTag).trim().toLowerCase()) : null;
+      const finalTag = canonical || 'Inbox';
+      task.tags = [finalTag];
 
       const draft = {
         id: draftId,
@@ -406,48 +526,13 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
     if (action && action.startsWith('ai:')) {
       const [, act, draftId] = action.split(':');
-      const entry = aiDraftById.get(draftId);
-
-      if (!entry || entry.chatId !== chatId) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Черновик не найден или устарел. Напиши задачу еще раз.');
-        return;
-      }
-
       if (act === 'cancel') {
-        aiDraftById.delete(draftId);
-        aiDraftByChatId.delete(chatId);
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Ок, отменил.');
+        cancelAiDraft({ chatId, draftId, queryId: query.id });
         return;
       }
 
       if (act === 'confirm') {
-        const task = entry.task;
-        const tag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
-        const priority = normalizePriorityForDb(task.priority ?? null);
-
-        try {
-          debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
-          await notionRepo.createTask({
-            title: task.title,
-            tag,
-            pmd: task.pmd ?? null,
-            priority,
-            dueDate: task.dueDate ?? null,
-            status: 'Idle',
-          });
-          debugLog('notion_result', { op: 'createTask', ok: true });
-          bot.sendMessage(chatId, 'Готово, добавил задачу в Notion.');
-        } catch {
-          debugLog('notion_result', { op: 'createTask', ok: false });
-          bot.sendMessage(chatId, 'Не получилось создать задачу в Notion. Попробуй еще раз.');
-        } finally {
-          aiDraftById.delete(draftId);
-          aiDraftByChatId.delete(chatId);
-        }
-
-        bot.answerCallbackQuery(query.id);
+        await confirmAiDraft({ chatId, draftId, queryId: query.id });
         return;
       }
 
@@ -473,6 +558,13 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       const fullTask = taskTextById.get(taskId);
       const truncatedTask = truncate(fullTask, 20);
       clearTimer(chatId);
+
+      const normalizedCategory = normalizeCategoryInput(category);
+      if (!normalizedCategory) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Эта категория недоступна.');
+        return;
+      }
 
       if (PMD_CATEGORIES.includes(category)) {
         waitingFor.pmd.add(chatId);
@@ -529,10 +621,10 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       }
 
       try {
-        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
+        debugLog('notion_call', { op: 'createTask', tag: normalizedCategory, status: 'Idle' });
+        await notionRepo.createTask({ title: fullTask, tag: normalizedCategory, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\".`);
+        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${normalizedCategory}\".`);
       } catch {
         debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
