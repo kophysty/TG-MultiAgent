@@ -7,6 +7,8 @@ const fs = require('fs');
 const { downloadTelegramFileToTmp } = require('../connectors/telegram/files');
 const { convertOggToWav16kMono } = require('../connectors/stt/ffmpeg');
 const { transcribeWavWithOpenAI } = require('../connectors/stt/openai_whisper');
+const { planAgentAction } = require('../ai/agent_planner');
+const { classifyConfirmIntent } = require('../ai/confirm_intent');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -43,6 +45,104 @@ function truncate(text, maxLen) {
   return `${text.slice(0, maxLen - 3)}...`;
 }
 
+function oneLinePreview(text, maxLen) {
+  const t = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return truncate(t, maxLen);
+}
+
+function yyyyMmDdInTz({ tz, date = new Date() }) {
+  // Returns YYYY-MM-DD in the specified IANA timezone.
+  // Uses Intl, no extra deps.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz || 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function inferListHintsFromText(userText) {
+  const t = String(userText || '').trim().toLowerCase();
+  if (!t) return { preset: null, tag: null, doneMode: 'exclude' };
+
+  // Done filter hints:
+  // - default: exclude Done tasks from lists
+  // - only: show only Done tasks when user explicitly asks for completed
+  // - include: show all tasks including Done when user explicitly asks to include completed
+  const hasDoneWords = /\b(выполненн|выполнен|завершенн|завершен|сделанн|сделан|done|completed)\b/.test(t);
+  const hasNegation = /\b(не\s*выполн|невыполн|не\s*заверш|незаверш|не\s*сделан|несделан)\b/.test(t);
+  const hasIncludeWords = /\b(включая|с\s+учет(ом)?|с\s+выполненными|с\s+завершенными|все\s+.*выполн)\b/.test(t);
+
+  let doneMode = 'exclude';
+  if (hasDoneWords && !hasNegation) {
+    doneMode = hasIncludeWords ? 'include' : 'only';
+  }
+
+  // "today" list intent: due today + inbox (alias).
+  // Prefer "на сегодня" phrasing to avoid collision with "Today=Inbox" alias.
+  const isTodayPreset = /\bна\s+сегодня\b/.test(t) || /\bсегодняшн/.test(t) || /\bзадач(и|а)\s+на\s+сегодня\b/.test(t);
+  if (isTodayPreset) return { preset: 'today', tag: null, doneMode };
+
+  // Category synonyms (RU -> Notion Tag)
+  if (/\bинбокс\b/.test(t) || /\bвходящ/.test(t) || /\btoday\b/.test(t)) return { preset: null, tag: 'Inbox', doneMode };
+  if (/\bдомашн/.test(t) || /\bдом\b/.test(t)) return { preset: null, tag: 'Home', doneMode };
+  if (/\bрабоч/.test(t) || /\bработа\b/.test(t)) return { preset: null, tag: 'Work', doneMode };
+
+  return { preset: null, tag: null, doneMode };
+}
+
+function buildQueryVariants(queryText) {
+  const raw = String(queryText || '').trim();
+  const base = raw.replace(/\s+/g, ' ').trim();
+  const variants = [];
+  const push = (s) => {
+    const v = String(s || '').trim();
+    if (!v) return;
+    if (!variants.includes(v)) variants.push(v);
+  };
+
+  push(base);
+  // remove quotes that might appear in voice/text
+  push(base.replace(/^["'«»]+|["'«»]+$/g, '').trim());
+
+  // digits glued: "1 2 3 4 cool" -> "1234 cool"
+  const gluedDigits = base.replace(/\b(\d)\s+(?=\d\b)/g, '$1').replace(/\s+/g, ' ').trim();
+  push(gluedDigits);
+  // aggressive: remove spaces between digit groups: "1 2 3 4" -> "1234"
+  push(base.replace(/\s+/g, '').trim());
+
+  return variants.slice(0, 5);
+}
+
+async function findTasksFuzzy({ notionRepo, queryText, limit }) {
+  const tries = buildQueryVariants(queryText);
+  const seen = new Set();
+  let best = [];
+  let bestQuery = tries[0] || queryText;
+
+  for (const q of tries) {
+    const res = await notionRepo.findTasks({ queryText: q, limit });
+    const uniq = [];
+    for (const t of res || []) {
+      if (!t?.id) continue;
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      uniq.push(t);
+    }
+    if (uniq.length > best.length) {
+      best = uniq;
+      bestQuery = q;
+    }
+    if (best.length >= 2) break; // good enough, stop early
+  }
+
+  return { tasks: best, usedQueryText: bestQuery };
+}
+
 function normalizeCategoryInput(category) {
   const c = String(category || '').trim();
   if (!c) return null;
@@ -67,12 +167,27 @@ function normalizeTagsForDisplay(tags) {
 
 function isAffirmativeText(text) {
   const t = String(text || '').trim().toLowerCase();
-  return t === 'да' || t === 'подтверждаю' || t === 'подтвердить' || t === 'ок' || t === 'okay';
+  return (
+    t === 'да' ||
+    t === 'ага' ||
+    t === 'угу' ||
+    t === 'ок' ||
+    t === 'окей' ||
+    t === 'okay' ||
+    t === 'подтверждаю' ||
+    t === 'подтвердить' ||
+    t === 'согласен' ||
+    t === 'верно' ||
+    t === 'правильно' ||
+    t === 'точно' ||
+    t === 'хорошо' ||
+    t === 'давай'
+  );
 }
 
 function isNegativeText(text) {
   const t = String(text || '').trim().toLowerCase();
-  return t === 'нет' || t === 'отмена' || t === 'отменить';
+  return t === 'нет' || t === 'не' || t === 'отмена' || t === 'отменить' || t === 'не надо';
 }
 
 function buildCategoryKeyboard({ categories, taskId }) {
@@ -137,6 +252,16 @@ function buildAiConfirmKeyboard({ draftId }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
+function buildToolConfirmKeyboard({ actionId }) {
+  const rows = [
+    [
+      { text: 'Подтвердить', callback_data: `tool:confirm:${actionId}`.slice(0, 64) },
+      { text: 'Отмена', callback_data: `tool:cancel:${actionId}`.slice(0, 64) },
+    ],
+  ];
+  return { reply_markup: { inline_keyboard: rows } };
+}
+
 function formatAiTaskSummary(task) {
   const title = task?.title || '(без названия)';
   const dueDate = task?.dueDate || 'не указана';
@@ -183,6 +308,8 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
   // AI: in-memory drafts, no persistence yet.
   const aiDraftByChatId = new Map(); // chatId -> { id, task, updatedAt, awaitingConfirmation }
   const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
+  const pendingToolActionByChatId = new Map(); // chatId -> { id, kind, payload, createdAt }
+  const lastShownListByChatId = new Map(); // chatId -> [{ index, id, title }]
   const tz = process.env.TG_TZ || 'Europe/Moscow';
   const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1-mini';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
@@ -241,6 +368,188 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     aiDraftByChatId.delete(chatId);
     if (queryId) bot.answerCallbackQuery(queryId);
     bot.sendMessage(chatId, 'Ок, отменил.');
+  }
+
+  function buildPickTaskKeyboard({ items }) {
+    const rows = [];
+    for (const it of items.slice(0, 10)) {
+      rows.push([{ text: `${it.index}. ${truncate(it.title, 24)}`, callback_data: `pick:${it.index}`.slice(0, 64) }]);
+    }
+    rows.push([{ text: 'Отмена', callback_data: 'pick:cancel' }]);
+    return { reply_markup: { inline_keyboard: rows } };
+  }
+
+  async function renderAndRememberList({ chatId, tasks, title }) {
+    const shown = tasks.slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+    lastShownListByChatId.set(chatId, shown);
+
+    if (!shown.length) {
+      bot.sendMessage(chatId, `${title}\n\n(пусто)`);
+      return;
+    }
+
+    const lines = [title, ''];
+    for (const it of shown) {
+      lines.push(`${it.index}. ${it.title}`);
+    }
+    bot.sendMessage(chatId, lines.join('\n'));
+  }
+
+  async function executeToolPlan({ chatId, from, toolName, args, userText }) {
+    try {
+      debugLog('tool_call', { tool: toolName, chatId, from });
+
+      if (toolName === 'notion.list_tasks') {
+        const hinted = inferListHintsFromText(userText);
+        const preset = args?.preset ? String(args.preset).trim().toLowerCase() : hinted.preset;
+        const tag =
+          args?.tag
+            ? normalizeCategoryInput(args.tag)
+            : hinted.tag
+              ? normalizeCategoryInput(hinted.tag)
+              : null;
+        const status = args?.status ? String(args.status) : null;
+        const includeDoneArg = typeof args?.includeDone === 'boolean' ? args.includeDone : null;
+        const doneOnlyArg = typeof args?.doneOnly === 'boolean' ? args.doneOnly : null;
+        const doneMode =
+          doneOnlyArg === true
+            ? 'only'
+            : includeDoneArg === true
+              ? 'include'
+              : status && String(status).trim().toLowerCase() === 'done'
+                ? 'only'
+                : hinted.doneMode || 'exclude';
+        let dueDate = args?.dueDate ? String(args.dueDate).trim() : null;
+        const queryText = args?.queryText ? String(args.queryText) : null;
+
+        if (dueDate && (dueDate.toLowerCase() === 'today' || dueDate.toLowerCase() === 'сегодня')) {
+          dueDate = yyyyMmDdInTz({ tz });
+        }
+
+        let tasks = [];
+        if (preset === 'today') {
+          const today = yyyyMmDdInTz({ tz });
+          const queryStatus = doneMode === 'only' ? 'Done' : null;
+          const byDate = await notionRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
+          const inbox = await notionRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
+          const seen = new Set();
+          for (const x of [...byDate, ...inbox]) {
+            if (!x || !x.id) continue;
+            if (seen.has(x.id)) continue;
+            seen.add(x.id);
+            tasks.push(x);
+          }
+        } else {
+          const queryStatus = status || (doneMode === 'only' ? 'Done' : null);
+          tasks = await notionRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
+        }
+
+        let filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
+
+        if (doneMode === 'exclude') {
+          filtered = filtered.filter((t) => String(t.status || '').trim().toLowerCase() !== 'done');
+        } else if (doneMode === 'only') {
+          filtered = filtered.filter((t) => String(t.status || '').trim().toLowerCase() === 'done');
+        } else {
+          // include -> do nothing
+        }
+
+        const title = doneMode === 'only' ? 'Твои выполненные задачи:' : 'Твои задачи:';
+        await renderAndRememberList({ chatId, tasks: filtered, title });
+        return;
+      }
+
+      if (toolName === 'notion.find_tasks') {
+        const queryText = String(args?.queryText || '').trim();
+        const { tasks } = await findTasksFuzzy({ notionRepo, queryText, limit: 20 });
+        const filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
+        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":` });
+        return;
+      }
+
+      if (toolName === 'notion.create_task') {
+        const title = String(args?.title || '').trim();
+        const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
+        const priority = args?.priority ? String(args.priority) : null;
+        const dueDate = args?.dueDate ? String(args.dueDate) : null;
+        const status = args?.status ? String(args.status) : 'Idle';
+        const description = args?.description ? String(args.description) : null;
+
+        const created = await notionRepo.createTask({ title, tag, priority, dueDate, status });
+        if (description) await notionRepo.appendDescription({ pageId: created.id, text: description });
+        bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
+        return;
+      }
+
+      // Actions that need a specific task: use either taskIndex (from last list) or pageId.
+      const pageId = args?.pageId ? String(args.pageId) : null;
+      const taskIndex = args?.taskIndex ? Number(args.taskIndex) : null;
+      let resolvedPageId = pageId;
+
+      if (!resolvedPageId && taskIndex && lastShownListByChatId.has(chatId)) {
+        const found = (lastShownListByChatId.get(chatId) || []).find((x) => x.index === taskIndex);
+        if (found) resolvedPageId = found.id;
+      }
+
+      if (!resolvedPageId && args?.queryText) {
+        const queryText = String(args.queryText).trim();
+        const fuzzy = await findTasksFuzzy({ notionRepo, queryText, limit: 10 });
+        const candidates = (fuzzy.tasks || []).filter((t) => !t.tags.includes('Deprecated'));
+        if (candidates.length === 1) resolvedPageId = candidates[0].id;
+        if (candidates.length > 1) {
+          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName, payload: { ...args, _candidates: items }, createdAt: Date.now() });
+          bot.sendMessage(chatId, 'Нашел несколько задач. Выбери:', buildPickTaskKeyboard({ items }));
+          return;
+        }
+      }
+
+      if (!resolvedPageId) {
+        bot.sendMessage(chatId, 'Не понял, к какой задаче применить действие. Напиши номер из списка или уточни название.');
+        return;
+      }
+
+      if (toolName === 'notion.mark_done') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.mark_done:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.mark_done', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Пометить задачу как выполненную?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.move_to_deprecated') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.move_to_deprecated:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.move_to_deprecated', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Перенести задачу в Deprecated?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.update_task') {
+        const patch = {
+          title: args?.title ? String(args.title) : undefined,
+          tag: args?.tag ? normalizeCategoryInput(args.tag) : undefined,
+          priority: args?.priority ? String(args.priority) : undefined,
+          dueDate: args?.dueDate ? String(args.dueDate) : undefined,
+          status: args?.status ? String(args.status) : undefined,
+        };
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_task:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_task', payload: { pageId: resolvedPageId, patch }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Применить изменения к задаче?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.append_description') {
+        const text = String(args?.text || '').trim();
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.append_description:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.append_description', payload: { pageId: resolvedPageId, text }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Добавить это в описание задачи?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      bot.sendMessage(chatId, 'Неизвестная операция.');
+    } catch (e) {
+      debugLog('tool_error', { tool: toolName, message: String(e?.message || e) });
+      bot.sendMessage(chatId, 'Ошибка при выполнении операции с Notion.');
+    }
   }
 
   function clearTimer(chatId) {
@@ -439,12 +748,42 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
           return;
         }
 
+        const transcriptPreview = oneLinePreview(transcript, 90);
+
         if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: формирую задачу...' });
 
-        // Reuse AI intent analyzer and draft confirmation flow.
+        // Voice transcript should go through the same planner->tools path as text messages.
+        const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
+        const lastShown = lastShownListByChatId.get(chatId) || [];
+        try {
+          const plan = await planAgentAction({
+            apiKey,
+            model: aiModel,
+            userText: transcript,
+            allowedCategories,
+            lastShownList: lastShown,
+          });
+
+          if (plan.type === 'chat') {
+            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
+            bot.sendMessage(chatId, plan.chat.message);
+            return;
+          }
+
+          if (plan.type === 'tool') {
+            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: выполняю...' });
+            await executeToolPlan({ chatId, from, toolName: plan.tool.name, args: plan.tool.args, userText: transcript });
+            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
+            return;
+          }
+        } catch (e) {
+          debugLog('planner_error', { source: 'voice', message: String(e?.message || e) });
+          // Fall back to legacy AI intent analyzer and draft confirmation flow.
+        }
+
+        // Fallback: legacy task/question -> draft confirmation (kept for robustness).
         const existingDraft = aiDraftByChatId.get(chatId) || null;
         const priorTaskDraft = existingDraft?.task || null;
-        const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
 
         const { normalized } = await aiAnalyzeMessage({
           apiKey,
@@ -456,10 +795,10 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
           allowedCategories,
         });
 
-        debugLog('ai_result', { type: normalized.type, source: 'voice' });
+        debugLog('ai_result', { type: normalized.type, source: 'voice_fallback' });
 
         if (normalized.type === 'question') {
-          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: готово.' });
+          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
           bot.sendMessage(chatId, normalized.question.answer);
           return;
         }
@@ -478,7 +817,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         aiDraftByChatId.set(chatId, draft);
         aiDraftById.set(draftId, { ...draft, chatId });
 
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: готово, проверь задачу.' });
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
         const kb = buildAiConfirmKeyboard({ draftId });
         bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
       } catch (e) {
@@ -557,7 +896,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         cancelAiDraft({ chatId, draftId: existingDraft.id, queryId: null });
         return;
       }
-      // Otherwise treat as correction and re-run AI with prior draft.
+      // Otherwise classify intent (confirm/cancel/edit) with AI fallback.
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -566,12 +905,102 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       return;
     }
 
+    // AI draft confirm fallback (semantic): if we are awaiting confirmation and user didn't match rules,
+    // try to classify as confirm/cancel/edit.
+    if (existingDraft?.awaitingConfirmation) {
+      let intent = 'unknown';
+      try {
+        intent = await classifyConfirmIntent({ apiKey, model: aiModel, userText: text, context: 'ai_task_draft' });
+      } catch {
+        intent = 'unknown';
+      }
+
+      if (intent === 'confirm') {
+        await confirmAiDraft({ chatId, draftId: existingDraft.id, queryId: null });
+        return;
+      }
+      if (intent === 'cancel') {
+        cancelAiDraft({ chatId, draftId: existingDraft.id, queryId: null });
+        return;
+      }
+      // If "edit" or "unknown" - fall through to treat as correction and rerun AI task parser below.
+    }
+
+    // Pending tool confirmations: use rule-based, then AI fallback.
+    const pending = pendingToolActionByChatId.get(chatId) || null;
+    if (pending) {
+      const ruleConfirm = isAffirmativeText(text) ? 'confirm' : isNegativeText(text) ? 'cancel' : null;
+      let intent = ruleConfirm;
+      if (!intent) {
+        try {
+          intent = await classifyConfirmIntent({ apiKey, model: aiModel, userText: text, context: pending.kind });
+        } catch {
+          intent = 'unknown';
+        }
+      }
+
+      if (intent === 'cancel') {
+        pendingToolActionByChatId.delete(chatId);
+        bot.sendMessage(chatId, 'Ок, отменил.');
+        return;
+      }
+
+      if (intent === 'confirm') {
+        const kind = pending.kind;
+        const payload = pending.payload;
+        pendingToolActionByChatId.delete(chatId);
+        try {
+          if (kind === 'notion.mark_done') {
+            await notionRepo.markDone({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
+            return;
+          }
+          if (kind === 'notion.move_to_deprecated') {
+            await notionRepo.moveToDeprecated({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
+            return;
+          }
+          if (kind === 'notion.update_task') {
+            await notionRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
+            bot.sendMessage(chatId, 'Готово. Обновил задачу.');
+            return;
+          }
+          if (kind === 'notion.append_description') {
+            await notionRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
+            bot.sendMessage(chatId, 'Готово. Добавил описание.');
+            return;
+          }
+        } catch {
+          bot.sendMessage(chatId, 'Не получилось выполнить действие в Notion.');
+          return;
+        }
+      }
+
+      // If user is editing instead of confirming, treat the message as a new instruction and fall through.
+    }
+
+    // Agent planner: try tool-based action first.
+    const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
+    try {
+      const lastShown = lastShownListByChatId.get(chatId) || [];
+      const plan = await planAgentAction({ apiKey, model: aiModel, userText: text, allowedCategories, lastShownList: lastShown });
+      if (plan.type === 'chat') {
+        bot.sendMessage(chatId, plan.chat.message);
+        return;
+      }
+      if (plan.type === 'tool') {
+        await executeToolPlan({ chatId, from, toolName: plan.tool.name, args: plan.tool.args, userText: text });
+        return;
+      }
+    } catch (e) {
+      debugLog('planner_error', { message: String(e?.message || e) });
+      // Fall back to legacy AI intent parser below.
+    }
+
     const priorTaskDraft = existingDraft?.task || null;
 
     // Allowed categories come from Notion Tags options and exclude Deprecated.
     // AI must choose exactly one of them, otherwise we will fallback to Inbox.
-    const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
-
     debugLog('ai_call', {
       model: aiModel,
       tz,
@@ -635,6 +1064,113 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     const chatId = query.message.chat.id;
     const action = query.data;
     debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
+
+    if (action && action.startsWith('tool:')) {
+      const [, act, actionId] = action.split(':');
+      const pending = pendingToolActionByChatId.get(chatId) || null;
+
+      if (!pending || !pending.id || pending.id !== actionId) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Подтверждение устарело. Повтори команду.');
+        return;
+      }
+
+      if (act === 'cancel') {
+        pendingToolActionByChatId.delete(chatId);
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Ок, отменил.');
+        return;
+      }
+
+      if (act === 'confirm') {
+        const kind = pending.kind;
+        const payload = pending.payload;
+        pendingToolActionByChatId.delete(chatId);
+        bot.answerCallbackQuery(query.id);
+        try {
+          if (kind === 'notion.mark_done') {
+            await notionRepo.markDone({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
+            return;
+          }
+          if (kind === 'notion.move_to_deprecated') {
+            await notionRepo.moveToDeprecated({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
+            return;
+          }
+          if (kind === 'notion.update_task') {
+            await notionRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
+            bot.sendMessage(chatId, 'Готово. Обновил задачу.');
+            return;
+          }
+          if (kind === 'notion.append_description') {
+            await notionRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
+            bot.sendMessage(chatId, 'Готово. Добавил описание.');
+            return;
+          }
+          bot.sendMessage(chatId, 'Неизвестная операция.');
+        } catch {
+          bot.sendMessage(chatId, 'Не получилось выполнить действие в Notion.');
+        }
+        return;
+      }
+
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (action && action.startsWith('pick:')) {
+      const suffix = action.split(':')[1] || '';
+      if (suffix === 'cancel') {
+        pendingToolActionByChatId.delete(chatId);
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Ок, отменил.');
+        return;
+      }
+
+      const idx = Number(suffix);
+      const pending = pendingToolActionByChatId.get(chatId);
+      if (!pending || !Number.isFinite(idx)) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
+        return;
+      }
+
+      const items = pending.payload?._candidates || [];
+      const chosen = items.find((x) => x.index === idx);
+      if (!chosen) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Не нашел выбранный пункт. Попробуй еще раз.');
+        return;
+      }
+
+      // Replace pending action with resolved pageId and ask for confirmation.
+      const kind = pending.kind;
+      const actionId = makeId(`${chatId}:${Date.now()}:${kind}:${chosen.id}`);
+      pendingToolActionByChatId.set(chatId, { id: actionId, kind, payload: { ...pending.payload, pageId: chosen.id }, createdAt: Date.now() });
+
+      bot.answerCallbackQuery(query.id);
+
+      if (kind === 'notion.mark_done') {
+        bot.sendMessage(chatId, `Пометить выполнено: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.move_to_deprecated') {
+        bot.sendMessage(chatId, `Перенести в Deprecated: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.update_task') {
+        bot.sendMessage(chatId, `Обновить задачу: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.append_description') {
+        bot.sendMessage(chatId, `Добавить описание к: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      bot.sendMessage(chatId, 'Ок. Подтверди действие.', buildToolConfirmKeyboard({ actionId }));
+      return;
+    }
 
     if (action && action.startsWith('ai:')) {
       const [, act, draftId] = action.split(':');

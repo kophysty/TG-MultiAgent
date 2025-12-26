@@ -18,5 +18,18 @@ All notable changes to this project will be documented in this file.
 - Added bot version output to `/start` and reorganized docs into `docs/roadmap/` and `docs/current/`.
 - Added voice pipeline v1: download Telegram voice, convert via ffmpeg, transcribe with OpenAI Whisper, then run existing AI flow and confirmation.
 - Removed PMD step from manual add flow and made Notion task creation resilient to removed DB properties.
+- Improved AI Notion lists:
+  - Default lists exclude completed tasks (`Done`).
+  - Completed tasks are shown only by explicit request.
+  - Added category synonyms and "today" preset (due today plus Inbox).
+- Improved voice UX:
+  - Voice transcript is routed through the same planner tool path as text.
+  - Final status message is replaced with a 1-line transcript preview ("Распознано: ...").
+- Fixed Notion update behavior:
+  - Renaming/updating a task no longer clears its Tags/category when tag is not provided.
+- Improved tool UX:
+  - Tool confirmations now use inline buttons (with "да/нет" fallback).
+- Improved fuzzy search:
+  - Task lookup tolerates voice artifacts (extra spaces, digit splitting like "1 2 3 4").
 
 
