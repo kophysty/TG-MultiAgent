@@ -27,5 +27,7 @@
   - `Today` is a UI alias for Notion tag `Inbox`.
   - AI is constrained to choose a category only from Notion `Tags` options (fallback to `Inbox`).
 - Reorganized docs into `docs/roadmap/` (plan) and `docs/current/` (current implemented behavior).
+- Added voice pipeline v1: download voice by `file_id`, convert via ffmpeg to wav 16k mono, transcribe with OpenAI Whisper, then run existing AI flow and confirmation.
+- Removed PMD step from manual add flow and made Notion task creation dynamic to DB schema changes.
 
 

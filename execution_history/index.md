@@ -23,5 +23,6 @@ Use: `execution_history/sprint_template.md`
 
 - `2025-12-25_ai_mvp.md` - AI MVP inside polling todo bot (no n8n)
 - `2025-12-26_categories_alias_version.md` - Categories rules + /start version + docs current/roadmap split
+- `2025-12-26_voice_pipeline.md` - Voice pipeline v1 (download, ffmpeg, Whisper STT, AI draft)
 
 

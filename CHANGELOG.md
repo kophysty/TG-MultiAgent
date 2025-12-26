@@ -16,5 +16,7 @@ All notable changes to this project will be documented in this file.
 - Updated env loader to parse standard `.env` `KEY=VALUE` entries (e.g. `OPENAI_API_KEY`) from repo root.
 - Constrained AI to use only existing Notion `Tags` categories (excluding `Deprecated`) and added `Today` (UI) alias to `Inbox` (Notion tag).
 - Added bot version output to `/start` and reorganized docs into `docs/roadmap/` and `docs/current/`.
+- Added voice pipeline v1: download Telegram voice, convert via ffmpeg, transcribe with OpenAI Whisper, then run existing AI flow and confirmation.
+- Removed PMD step from manual add flow and made Notion task creation resilient to removed DB properties.
 
 

@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const moment = require('moment');
 const { aiAnalyzeMessage } = require('../ai/todo_intent');
 const todoBotPkg = require('../../apps/todo_bot/package.json');
+const fs = require('fs');
+
+const { downloadTelegramFileToTmp } = require('../connectors/telegram/files');
+const { convertOggToWav16kMono } = require('../connectors/stt/ffmpeg');
+const { transcribeWavWithOpenAI } = require('../connectors/stt/openai_whisper');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -18,6 +23,14 @@ function debugLog(event, fields = {}) {
   // Never log secrets. Keep payloads small and mostly metadata.
   // eslint-disable-next-line no-console
   console.log(`[tg_debug] ${event}`, fields);
+}
+
+async function safeEditStatus({ bot, chatId, messageId, text }) {
+  try {
+    await bot.editMessageText(text, { chat_id: chatId, message_id: messageId });
+  } catch {
+    // Ignore edit failures (message deleted, rate limits, etc.).
+  }
 }
 
 function makeId(text) {
@@ -128,7 +141,6 @@ function formatAiTaskSummary(task) {
   const title = task?.title || '(без названия)';
   const dueDate = task?.dueDate || 'не указана';
   const priority = task?.priority || 'не указан';
-  const pmd = typeof task?.pmd === 'number' ? String(task.pmd) : 'не указан';
   const tag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
   const displayTag = tag && String(tag).trim().toLowerCase() === 'inbox' ? 'Today' : tag;
 
@@ -137,7 +149,6 @@ function formatAiTaskSummary(task) {
     `- Название: ${title}`,
     `- Дата: ${dueDate}`,
     `- Приоритет: ${priority}`,
-    `- PMD: ${pmd}`,
     `- Категория: ${displayTag || 'не указана'}`,
     '',
     'Верно?',
@@ -159,15 +170,12 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
   // Never show "Deprecated" here.
   const TASK_CATEGORIES = notionCategories.length ? ['Today', ...notionCategories.filter((c) => String(c || '').trim().toLowerCase() !== 'inbox')] : ['Today', 'Work', 'Home', 'Global', 'Everyday', 'Personal'];
   const PRIORITY_OPTIONS = ['skip', ...priorityOptions.length ? priorityOptions : ['Low', 'Med', 'High']];
-  const PMD_OPTIONS = ['skip', '1', '2', '3', '4', '6', '8', '10'];
-  const PMD_CATEGORIES = ['Home', 'Work', 'Global', 'Personal'];
   const DATE_CATEGORIES = ['Work', 'Home'];
 
   const pendingTask = new Map(); // chatId -> { id, text }
   const taskTextById = new Map(); // taskId -> text
   const timers = new Map(); // chatId -> timeoutId
   const waitingFor = {
-    pmd: new Set(),
     priority: new Set(),
     date: new Set(),
   };
@@ -211,7 +219,6 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       await notionRepo.createTask({
         title: task.title,
         tag,
-        pmd: task.pmd ?? null,
         priority,
         dueDate: task.dueDate ?? null,
         status: 'Idle',
@@ -383,6 +390,111 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
     // Ignore commands here (handled by onText handlers).
     if (msg.text && msg.text.startsWith('/')) return;
+
+    // Voice pipeline (minimal v1):
+    // 1) download OGG/OPUS by file_id
+    // 2) ffmpeg -> wav 16k mono
+    // 3) Whisper STT
+    // 4) feed transcript into existing AI flow (task/question)
+    if (msg.voice && msg.voice.file_id) {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        bot.sendMessage(chatId, 'Voice получен, но OPENAI_API_KEY не найден. Проверь .env.');
+        return;
+      }
+
+      const sttModel = process.env.TG_STT_MODEL || 'whisper-1';
+      const lang = process.env.TG_STT_LANGUAGE || 'ru';
+
+      debugLog('voice_received', {
+        chatId,
+        from,
+        duration: msg.voice.duration || null,
+        file_unique_id: msg.voice.file_unique_id || null,
+      });
+
+      const statusMsg = await bot.sendMessage(chatId, 'Voice: скачиваю...');
+      const statusMessageId = statusMsg?.message_id;
+
+      let oggPath = null;
+      let wavPath = null;
+
+      try {
+        const dl = await downloadTelegramFileToTmp({ bot, fileId: msg.voice.file_id, prefix: 'tg_voice', ext: 'ogg' });
+        oggPath = dl.outPath;
+        debugLog('voice_downloaded', { chatId, bytes: fs.statSync(oggPath).size });
+
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: конвертирую (ffmpeg)...' });
+        const conv = await convertOggToWav16kMono({ inputPath: oggPath });
+        wavPath = conv.wavPath;
+
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: распознаю (STT)...' });
+        const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang });
+        const transcript = stt.text;
+
+        debugLog('voice_transcribed', { chatId, text_len: transcript.length, text_preview: transcript.slice(0, 80) });
+
+        if (!transcript) {
+          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: не удалось распознать текст.' });
+          return;
+        }
+
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: формирую задачу...' });
+
+        // Reuse AI intent analyzer and draft confirmation flow.
+        const existingDraft = aiDraftByChatId.get(chatId) || null;
+        const priorTaskDraft = existingDraft?.task || null;
+        const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
+
+        const { normalized } = await aiAnalyzeMessage({
+          apiKey,
+          model: aiModel,
+          tz,
+          nowIso: new Date().toISOString(),
+          userText: transcript,
+          priorTaskDraft,
+          allowedCategories,
+        });
+
+        debugLog('ai_result', { type: normalized.type, source: 'voice' });
+
+        if (normalized.type === 'question') {
+          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: готово.' });
+          bot.sendMessage(chatId, normalized.question.answer);
+          return;
+        }
+
+        const draftId = existingDraft?.id || makeId(`${chatId}:${Date.now()}:${normalized.task.title}`);
+        const task = normalized.task;
+        const rawAiTag = Array.isArray(task.tags) && task.tags.length ? task.tags[0] : null;
+        const normalizedTag = normalizeCategoryInput(rawAiTag);
+
+        const allowedMap = new Map(allowedCategories.map((c) => [String(c).trim().toLowerCase(), c]));
+        const canonical = normalizedTag ? allowedMap.get(String(normalizedTag).trim().toLowerCase()) : null;
+        const finalTag = canonical || 'Inbox';
+        task.tags = [finalTag];
+
+        const draft = { id: draftId, task, updatedAt: Date.now(), awaitingConfirmation: true };
+        aiDraftByChatId.set(chatId, draft);
+        aiDraftById.set(draftId, { ...draft, chatId });
+
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: готово, проверь задачу.' });
+        const kb = buildAiConfirmKeyboard({ draftId });
+        bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
+      } catch (e) {
+        debugLog('voice_error', { chatId, message: String(e?.message || e) });
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: ошибка при обработке.' });
+        bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
+      } finally {
+        try {
+          if (oggPath) fs.unlinkSync(oggPath);
+        } catch {}
+        try {
+          if (wavPath) fs.unlinkSync(wavPath);
+        } catch {}
+      }
+      return;
+    }
 
     // Manual /addtask flow (existing behavior).
     if (pendingTask.has(chatId)) {
@@ -566,33 +678,6 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
         return;
       }
 
-      if (PMD_CATEGORIES.includes(category)) {
-        waitingFor.pmd.add(chatId);
-        const kb = buildOptionsKeyboard({ prefix: 'pmd', taskId, category, options: PMD_OPTIONS });
-        bot.sendMessage(chatId, `Please select the PMD value for task \"${truncatedTask}\":`, kb);
-        timers.set(
-          chatId,
-          setTimeout(async () => {
-            if (!waitingFor.pmd.has(chatId)) return;
-            waitingFor.pmd.delete(chatId);
-            try {
-              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
-              debugLog('notion_result', { op: 'createTask', ok: true });
-              bot.sendMessage(chatId, `PMD selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with no PMD/priority/due date.`);
-            } catch {
-              debugLog('notion_result', { op: 'createTask', ok: false });
-              bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-            } finally {
-              pendingTask.delete(chatId);
-              clearTimer(chatId);
-            }
-          }, 30_000)
-        );
-        bot.answerCallbackQuery(query.id);
-        return;
-      }
-
       if (DATE_CATEGORIES.includes(category)) {
         waitingFor.date.add(chatId);
         const kb = buildDateKeyboard({ taskId, category });
@@ -636,43 +721,6 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       return;
     }
 
-    if (action.startsWith('pmd:')) {
-      // pmd:{taskId}:{category}:{pmdValue}
-      const [, taskId, category, pmdValue] = action.split(':');
-      const fullTask = taskTextById.get(taskId);
-      const truncatedTask = truncate(fullTask, 20);
-      waitingFor.pmd.delete(chatId);
-      waitingFor.priority.add(chatId);
-      clearTimer(chatId);
-
-      const pmd = String(pmdValue).toLowerCase() === 'skip' ? null : Number(pmdValue);
-      const kb = buildOptionsKeyboard({ prefix: 'priority', taskId, category, options: PRIORITY_OPTIONS, pmd });
-      bot.sendMessage(chatId, `Please select the priority for task \"${truncatedTask}\":`, kb);
-
-      timers.set(
-        chatId,
-        setTimeout(async () => {
-          if (!waitingFor.priority.has(chatId)) return;
-          waitingFor.priority.delete(chatId);
-          try {
-            debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-            await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, status: 'Idle' });
-            debugLog('notion_result', { op: 'createTask', ok: true });
-            bot.sendMessage(chatId, `Priority selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'}.`);
-          } catch {
-            debugLog('notion_result', { op: 'createTask', ok: false });
-            bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-          } finally {
-            pendingTask.delete(chatId);
-            clearTimer(chatId);
-          }
-        }, 30_000)
-      );
-
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
     if (action.startsWith('priority:')) {
       // priority:{taskId}:{category}:{pmd}:{priorityOption}
       const [, taskId, category, pmdRaw, priorityOpt] = action.split(':');
@@ -681,12 +729,11 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       waitingFor.priority.delete(chatId);
       clearTimer(chatId);
 
-      const pmd = pmdRaw === 'null' ? null : Number(pmdRaw);
       const finalPriority = String(priorityOpt).toLowerCase() === 'skip' ? null : priorityOpt;
 
       if (DATE_CATEGORIES.includes(category)) {
         waitingFor.date.add(chatId);
-        const kb = buildDateKeyboard({ taskId, category, pmd, priority: finalPriority });
+        const kb = buildDateKeyboard({ taskId, category, pmd: null, priority: finalPriority });
         bot.sendMessage(chatId, `Please select a due date for task \"${truncatedTask}\":`, kb);
 
         timers.set(
@@ -696,9 +743,9 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
             waitingFor.date.delete(chatId);
             try {
               debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority: finalPriority, status: 'Idle' });
+              await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
               debugLog('notion_result', { op: 'createTask', ok: true });
-              bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'} and Priority: ${finalPriority || 'not set'}.`);
+              bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
             } catch {
               debugLog('notion_result', { op: 'createTask', ok: false });
               bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
@@ -715,9 +762,9 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
 
       try {
         debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority: finalPriority, status: 'Idle' });
+        await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'} and Priority: ${finalPriority || 'not set'}.`);
+        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
       } catch {
         debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
@@ -738,15 +785,14 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
       waitingFor.date.delete(chatId);
       clearTimer(chatId);
 
-      const pmd = pmdRaw === 'null' ? null : Number(pmdRaw);
       const priority = prioRaw === 'null' ? null : prioRaw;
       const dueDate = String(dateString).toLowerCase() === 'skip' ? null : dateString;
 
       try {
         debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, pmd: pmd ?? null, priority, dueDate, status: 'Idle' });
+        await notionRepo.createTask({ title: fullTask, tag: category, priority, dueDate, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with PMD: ${pmd ?? 'not set'}, Priority: ${priority || 'not set'}, Due Date: ${dueDate || 'not set'}.`);
+        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${priority || 'not set'}, Due Date: ${dueDate || 'not set'}.`);
       } catch {
         debugLog('notion_result', { op: 'createTask', ok: false });
         bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
