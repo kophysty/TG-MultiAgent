@@ -35,6 +35,7 @@ All notable changes to this project will be documented in this file.
   - Added Postgres-backed subscriptions and deduplicated reminders log.
   - Added `/reminders_on` and `/reminders_off` commands (requires `POSTGRES_URL`).
   - Added `apps/reminders_worker` to send reminders (daily digest at 11:00, day-before 23:00 for date-only, 60 min before for timed tasks).
+  - Daily 11:00 summary includes tasks with due time (not only date-only) and prints a separate Inbox section.
 - Updated Tasks DB reference to the new Notion database.
 
 

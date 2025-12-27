@@ -31,7 +31,7 @@ class NotionTasksRepo {
     return { tags, priority, status };
   }
 
-  async listTasks({ tag, status, dueDate, queryText, limit = 100 } = {}) {
+  async listTasks({ tag, status, dueDate, dueDateOnOrAfter, dueDateBefore, queryText, limit = 100 } = {}) {
     const payload = {
       sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
       page_size: Math.min(Math.max(1, Number(limit) || 100), 100),
@@ -45,7 +45,12 @@ class NotionTasksRepo {
       // Status property type is "status"
       filters.push({ property: 'Status', status: { equals: status } });
     }
-    if (dueDate) {
+    if (dueDateOnOrAfter || dueDateBefore) {
+      const date = {};
+      if (dueDateOnOrAfter) date.on_or_after = dueDateOnOrAfter;
+      if (dueDateBefore) date.before = dueDateBefore;
+      filters.push({ property: 'Due Date', date });
+    } else if (dueDate) {
       filters.push({ property: 'Due Date', date: { equals: dueDate } });
     }
     if (queryText) {

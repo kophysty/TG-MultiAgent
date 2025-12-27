@@ -92,6 +92,59 @@ function formatTasksList(tasks) {
   return items.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
 }
 
+function formatTimeInTz(isoOrDate, tz) {
+  const d = new Date(String(isoOrDate));
+  if (!Number.isFinite(d.getTime())) return null;
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(d);
+}
+
+function buildDailySummaryText({ tz, today, dueTasks, inboxTasks }) {
+  const due = (dueTasks || []).filter((t) => !isDone(t) && !isDeprecated(t));
+  const inbox = (inboxTasks || []).filter((t) => !isDone(t) && !isDeprecated(t));
+
+  const timed = [];
+  const dateOnly = [];
+  for (const t of due) {
+    if (isDateOnly(t.dueDate)) dateOnly.push(t);
+    else timed.push(t);
+  }
+
+  // Sort timed by time in tz (best-effort)
+  timed.sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+
+  const lines = [`Напоминание (сегодня, ${today}):`, ''];
+
+  lines.push('С дедлайном сегодня:');
+  if (!timed.length && !dateOnly.length) {
+    lines.push('(пусто)');
+  } else {
+    for (const t of timed) {
+      const hhmm = formatTimeInTz(t.dueDate, tz);
+      lines.push(`- ${hhmm || '??:??'} - ${t.title}`);
+    }
+    for (const t of dateOnly) {
+      lines.push(`- ${t.title}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('Inbox:');
+  if (!inbox.length) {
+    lines.push('(пусто)');
+  } else {
+    for (const t of inbox.slice(0, 30)) {
+      lines.push(`- ${t.title}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 async function main() {
   hydrateProcessEnv();
 
@@ -135,8 +188,12 @@ async function main() {
     const tomorrow = addDaysYyyyMmDd(today, 1);
 
     // Pull tasks for today/tomorrow and Inbox.
+    // Use a day-range query for "today" to include both date-only and datetime tasks in the local timezone.
+    const dayStartUtc = zonedWallClockToUtc({ tz, yyyyMmDd: today, h: 0, min: 0 });
+    const nextDayStartUtc = zonedWallClockToUtc({ tz, yyyyMmDd: tomorrow, h: 0, min: 0 });
+
     const [dueToday, dueTomorrow, inbox] = await Promise.all([
-      notionRepo.listTasks({ dueDate: today, limit: 100 }),
+      notionRepo.listTasks({ dueDateOnOrAfter: dayStartUtc.toISOString(), dueDateBefore: nextDayStartUtc.toISOString(), limit: 100 }),
       notionRepo.listTasks({ dueDate: tomorrow, limit: 100 }),
       notionRepo.listTasks({ tag: 'Inbox', limit: 100 }),
     ]);
@@ -173,9 +230,15 @@ async function main() {
           remindAt,
         });
         if (inserted) {
-          const text = `Напоминание (сегодня):\n\n${formatTasksList(tasksToday)}`;
+          const text = buildDailySummaryText({
+            tz,
+            today,
+            dueTasks: dueToday,
+            inboxTasks: inbox,
+          });
           try {
-            await tg.sendMessage(chatId, text);
+            // Daily digest should be silent by default (no notification sound).
+            await tg.sendMessage(chatId, text, { disable_notification: true });
           } catch {
             await repo.deleteSentReminder({ chatId, pageId: `digest:${today}`, reminderKind: 'daily_11', remindAt });
           }

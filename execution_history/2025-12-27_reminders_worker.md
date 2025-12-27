@@ -28,7 +28,8 @@ Add Telegram reminders based on the Notion Tasks DB, with a separate worker proc
 ## Reminder rules (defaults)
 
 - Daily digest at `11:00` (`TG_REMINDERS_DAILY_AT`)
-  - due date = today (date-only or date-time) plus Inbox
+  - due date in today's local day range (TG_TZ), including tasks with time
+  - plus Inbox summary
   - exclude Done and Deprecated
 - Date-only tasks: day-before reminder at `23:00` (`TG_REMINDERS_DAY_BEFORE_AT`)
   - tasks due tomorrow with due date without time

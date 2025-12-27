@@ -49,17 +49,17 @@ Docker Compose лежит в `infra/docker-compose.yml`.
 
 ## Быстрые ссылки (docs)
 
-- [Финальный сборочный лист](./docs/final-checklist.md)
-- [Стек и деплой](./docs/stack-and-deploy.md)
-- [Разделение обязанностей](./docs/responsibilities.md)
-- [AI-оркестрация](./docs/agent-loop.md)
-- [Postgres](./docs/postgres.md)
-- [Tool Registry](./docs/tool-registry.md)
-- [Notion и MCP](./docs/notion-mcp.md)
-- [Text и Voice пайплайны](./docs/pipelines.md)
-- [Статусы в чате](./docs/chat-statuses.md)
-- [Документы и поиск](./docs/documents-and-search.md)
-- [Будущие интерфейсы](./docs/future-ui.md)
+- [docs/index.md](./docs/index.md)
+- [docs/current/index.md](./docs/current/index.md)
+- [docs/roadmap/index.md](./docs/roadmap/index.md)
+
+Ключевые разделы roadmap:
+
+- [Финальный сборочный лист](./docs/roadmap/final-checklist.md)
+- [Стек и деплой](./docs/roadmap/stack-and-deploy.md)
+- [AI-оркестрация](./docs/roadmap/agent-loop.md)
+- [Tool Registry](./docs/roadmap/tool-registry.md)
+- [Text и Voice пайплайны](./docs/roadmap/pipelines.md)
 
 ## Dev vs Prod
 

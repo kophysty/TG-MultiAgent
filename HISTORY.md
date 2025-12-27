@@ -46,6 +46,7 @@
   - Postgres-backed subscriptions and deduplicated sent reminders log.
   - `/reminders_on` and `/reminders_off` commands.
   - Separate `apps/reminders_worker` process for sending reminders.
+  - Daily 11:00 summary includes tasks with due time and prints a separate Inbox section.
 - Updated Tasks DB reference to the new Notion database.
 
 
