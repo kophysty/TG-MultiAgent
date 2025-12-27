@@ -26,5 +26,6 @@ Use: `execution_history/sprint_template.md`
 - `2025-12-26_voice_pipeline.md` - Voice pipeline v1 (download, ffmpeg, Whisper STT, AI draft)
 - `2025-12-26_voice_lists_ux.md` - Voice status compaction + list filters (exclude Done by default)
 - `2025-12-26_tool_buttons_fuzzy_search.md` - Tool confirm buttons + fuzzy search + safe updates (no tag loss)
+- `2025-12-27_reminders_worker.md` - Reminders worker MVP (Tasks DB + Postgres dedup)
 
 

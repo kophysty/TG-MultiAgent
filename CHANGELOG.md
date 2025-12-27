@@ -31,5 +31,10 @@ All notable changes to this project will be documented in this file.
   - Tool confirmations now use inline buttons (with "да/нет" fallback).
 - Improved fuzzy search:
   - Task lookup tolerates voice artifacts (extra spaces, digit splitting like "1 2 3 4").
+- Reminders worker (MVP):
+  - Added Postgres-backed subscriptions and deduplicated reminders log.
+  - Added `/reminders_on` and `/reminders_off` commands (requires `POSTGRES_URL`).
+  - Added `apps/reminders_worker` to send reminders (daily digest at 11:00, day-before 23:00 for date-only, 60 min before for timed tasks).
+- Updated Tasks DB reference to the new Notion database.
 
 

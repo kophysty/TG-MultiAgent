@@ -4,6 +4,7 @@ const TelegramBot = require('node-telegram-bot-api');
 
 const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
+const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { registerTodoBot } = require('../../../core/dialogs/todo_bot');
 
 async function main() {
@@ -28,7 +29,9 @@ async function main() {
     process.env.NOTION_TASKS_DB_ID ||
     process.env.NOTION_DATABASE_ID ||
     process.env.NOTION_DATABASE_ID_LOCAL ||
-    '2d3535c900f0818ebc77fd1fd3d9d6fa';
+    '2d6535c900f08191a624d325f66dbe7c';
+
+  const pgPool = createPgPoolFromEnv(); // optional, enabled when POSTGRES_URL is provided
 
   const bot = new TelegramBot(token, {
     polling: true,
@@ -37,7 +40,7 @@ async function main() {
   });
 
   const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
-  await registerTodoBot({ bot, notionRepo, databaseId });
+  await registerTodoBot({ bot, notionRepo, databaseId, pgPool, botMode: mode });
 
   // eslint-disable-next-line no-console
   console.log(`TG-MultiAgent todo bot started. mode=${mode}`);

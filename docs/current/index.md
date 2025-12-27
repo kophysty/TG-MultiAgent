@@ -7,6 +7,7 @@
 - [AI (текущая реализация)](./ai.md)
 - [Бот UI и команды (текущая реализация)](./bot-ui.md)
 - [Voice режим (текущая реализация)](./voice.md)
+- [Напоминалки (текущая реализация)](./reminders.md)
 
 ## Компоненты
 
@@ -20,7 +21,7 @@
 - `TELEGRAM_BOT_TOKEN_TESTS` - токен тестового бота (`@todofortests_bot`).
 - `TELEGRAM_BOT_TOKEN_PROD` - токен прод бота (`@my_temp_todo_bot`).
 - `NOTION_TOKEN` - токен Notion integration.
-- `NOTION_TASKS_DB_ID` - id базы задач (Tasks Base MultiAgent).
+- `NOTION_TASKS_DB_ID` - id базы задач (Tasks Base MultiAgent, current: `2d6535c900f08191a624d325f66dbe7c`).
 - `OPENAI_API_KEY` - ключ OpenAI (для AI режима).
 
 ## Запуск (dev, polling)

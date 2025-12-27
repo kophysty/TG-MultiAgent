@@ -42,5 +42,10 @@
   - Tool confirmations now use inline buttons (with "да/нет" fallback).
 - Improved fuzzy search:
   - Task lookup tolerates voice artifacts (extra spaces, digit splitting like "1 2 3 4").
+- Added reminders worker MVP:
+  - Postgres-backed subscriptions and deduplicated sent reminders log.
+  - `/reminders_on` and `/reminders_off` commands.
+  - Separate `apps/reminders_worker` process for sending reminders.
+- Updated Tasks DB reference to the new Notion database.
 
 

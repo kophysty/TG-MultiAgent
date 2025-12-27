@@ -283,9 +283,12 @@ function formatAiTaskSummary(task) {
   return lines.join('\n');
 }
 
-async function registerTodoBot({ bot, notionRepo, databaseId }) {
+const { RemindersRepo } = require('../connectors/postgres/reminders_repo');
+
+async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, botMode = 'tests' }) {
   debugLog('bot_init', { databaseId: String(databaseId) });
   const { tags: categoryOptions, priority: priorityOptions } = await notionRepo.getOptions();
+  const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
 
   // Categories are dynamic from Notion Tags. Exclude Deprecated from any user-facing menus and AI.
   const notionCategories = (categoryOptions || []).filter((c) => String(c || '').trim().toLowerCase() !== 'deprecated');
@@ -563,12 +566,53 @@ async function registerTodoBot({ bot, notionRepo, databaseId }) {
     debugLog('incoming_command', { chatId, command: '/start', from: msg.from?.username || null });
     const opts = {
       reply_markup: {
-        keyboard: [[{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: '/struct' }]],
+        keyboard: [
+          [{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: '/struct' }],
+          [{ text: '/reminders_on' }, { text: '/reminders_off' }],
+        ],
         resize_keyboard: true,
       },
     };
     const version = todoBotPkg?.version ? `v${todoBotPkg.version}` : 'v0.0.0';
     bot.sendMessage(chatId, `Welcome to TG-MultiAgent To-Do bot (dev). Version: ${version}`, opts);
+
+    // Auto-subscribe chat to reminders if Postgres is configured.
+    if (remindersRepo) {
+      remindersRepo
+        .upsertSubscription({ chatId, botMode, enabled: true })
+        .then(() => debugLog('reminders_subscribed', { chatId, enabled: true }))
+        .catch((e) => debugLog('reminders_subscribe_error', { chatId, message: String(e?.message || e) }));
+    }
+  });
+
+  bot.onText(/\/reminders_on/, async (msg) => {
+    const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/reminders_on', from: msg.from?.username || null });
+    if (!remindersRepo) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL в .env и перезапусти бота.');
+      return;
+    }
+    try {
+      await remindersRepo.upsertSubscription({ chatId, botMode, enabled: true });
+      bot.sendMessage(chatId, 'Ок. Напоминалки включены.');
+    } catch {
+      bot.sendMessage(chatId, 'Не получилось включить напоминалки. Проверь Postgres и повтори.');
+    }
+  });
+
+  bot.onText(/\/reminders_off/, async (msg) => {
+    const chatId = msg.chat.id;
+    debugLog('incoming_command', { chatId, command: '/reminders_off', from: msg.from?.username || null });
+    if (!remindersRepo) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL в .env и перезапусти бота.');
+      return;
+    }
+    try {
+      await remindersRepo.upsertSubscription({ chatId, botMode, enabled: false });
+      bot.sendMessage(chatId, 'Ок. Напоминалки выключены.');
+    } catch {
+      bot.sendMessage(chatId, 'Не получилось выключить напоминалки. Проверь Postgres и повтори.');
+    }
   });
 
   bot.onText(/\/struct/, async (msg) => {

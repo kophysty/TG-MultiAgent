@@ -5,7 +5,7 @@ Telegram агент, который работает с Notion как с пер�
 ## Первоисточник (single source of truth)
 
 - [Base structure (Notion)](https://www.notion.so/web3-future/Base-structure-2d1535c900f08016af17ca1d92c5c9de?t=2d3535c900f0805e884300a99586f20f)
-- [Tasks Base MultiAgent (Notion DB, CRUD тесты)](https://www.notion.so/web3-future/2d3535c900f0818ebc77fd1fd3d9d6fa?v=2d3535c900f081a9b471000c17d2423e&source=copy_link)
+- [Tasks Base MultiAgent (Notion DB, CRUD тесты)](https://www.notion.so/web3-future/2d6535c900f08191a624d325f66dbe7c?v=2d6535c900f08188b3cf000c5b8f5039)
 
 Если в репозитории и Notion есть расхождение - сначала правим Notion, затем обновляем `docs/`.
 
@@ -81,7 +81,7 @@ npm install
   - `TELEGRAM_BOT_TOKEN_TESTS` (для `@todofortests_bot`)
   - `TELEGRAM_BOT_TOKEN_PROD` (для `@my_temp_todo_bot`)
   - `NOTION_TOKEN`
-  - `NOTION_TASKS_DB_ID` (по умолчанию `Tasks Base MultiAgent`: `2d3535c900f0818ebc77fd1fd3d9d6fa`)
+  - `NOTION_TASKS_DB_ID` (по умолчанию `Tasks Base MultiAgent`: `2d6535c900f08191a624d325f66dbe7c`)
 - Для совместимости с твоим текущим `.env` поддержан и "человеческий" формат: бот пытается извлечь токены из строк, где упоминаются `@todofortests_bot`, `@my_temp_todo_bot` и Notion.
 
 3) Запустить бот:
