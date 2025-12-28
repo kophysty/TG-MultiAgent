@@ -27,5 +27,6 @@ Use: `execution_history/sprint_template.md`
 - `2025-12-26_voice_lists_ux.md` - Voice status compaction + list filters (exclude Done by default)
 - `2025-12-26_tool_buttons_fuzzy_search.md` - Tool confirm buttons + fuzzy search + safe updates (no tag loss)
 - `2025-12-27_reminders_worker.md` - Reminders worker MVP (Tasks DB + Postgres dedup)
+- `2025-12-28_ideas_social_toolkits.md` - Ideas + Social Media Planner toolkits (CRUD + archive + dedup)
 
 

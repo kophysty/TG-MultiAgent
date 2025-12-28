@@ -48,5 +48,7 @@
   - Separate `apps/reminders_worker` process for sending reminders.
   - Daily 11:00 summary includes tasks with due time and prints a separate Inbox section.
 - Updated Tasks DB reference to the new Notion database.
+- Added Ideas DB and Social Media Planner toolkits (list/create/update/archive) and a platform picker for social post creation.
+- Added duplicate check for create actions (tasks, ideas, social posts) with confirmation.
 
 

@@ -37,5 +37,7 @@ All notable changes to this project will be documented in this file.
   - Added `apps/reminders_worker` to send reminders (daily digest at 11:00, day-before 23:00 for date-only, 60 min before for timed tasks).
   - Daily 11:00 summary includes tasks with due time (not only date-only) and prints a separate Inbox section.
 - Updated Tasks DB reference to the new Notion database.
+- Added Ideas DB and Social Media Planner toolkits (list/create/update/archive) and a platform picker for social post creation.
+- Added duplicate check for create actions (tasks, ideas, social posts) with confirmation.
 
 

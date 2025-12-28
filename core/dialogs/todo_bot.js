@@ -285,9 +285,31 @@ function formatAiTaskSummary(task) {
 
 const { RemindersRepo } = require('../connectors/postgres/reminders_repo');
 
-async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, botMode = 'tests' }) {
-  debugLog('bot_init', { databaseId: String(databaseId) });
-  const { tags: categoryOptions, priority: priorityOptions } = await notionRepo.getOptions();
+function normalizeTitleKey(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]+/gu, '')
+    .trim();
+}
+
+function buildPickPlatformKeyboard({ actionId, platforms }) {
+  const rows = [];
+  const perRow = 2;
+  for (let i = 0; i < platforms.length; i += perRow) {
+    const row = [];
+    for (let j = i; j < Math.min(i + perRow, platforms.length); j++) {
+      row.push({ text: String(platforms[j]), callback_data: `plat:${actionId}:${j}`.slice(0, 64) });
+    }
+    rows.push(row);
+  }
+  rows.push([{ text: 'Отмена', callback_data: `tool:cancel:${actionId}`.slice(0, 64) }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
+
+async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, databaseIds, pgPool = null, botMode = 'tests' }) {
+  debugLog('bot_init', { databaseIds });
+  const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
 
   // Categories are dynamic from Notion Tags. Exclude Deprecated from any user-facing menus and AI.
@@ -346,7 +368,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
 
     try {
       debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
-      await notionRepo.createTask({
+      await tasksRepo.createTask({
         title: task.title,
         tag,
         priority,
@@ -433,8 +455,8 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
         if (preset === 'today') {
           const today = yyyyMmDdInTz({ tz });
           const queryStatus = doneMode === 'only' ? 'Done' : null;
-          const byDate = await notionRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
-          const inbox = await notionRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
+          const byDate = await tasksRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
+          const inbox = await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
           const seen = new Set();
           for (const x of [...byDate, ...inbox]) {
             if (!x || !x.id) continue;
@@ -444,7 +466,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
           }
         } else {
           const queryStatus = status || (doneMode === 'only' ? 'Done' : null);
-          tasks = await notionRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
+          tasks = await tasksRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
         }
 
         let filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
@@ -464,7 +486,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
 
       if (toolName === 'notion.find_tasks') {
         const queryText = String(args?.queryText || '').trim();
-        const { tasks } = await findTasksFuzzy({ notionRepo, queryText, limit: 20 });
+        const { tasks } = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 20 });
         const filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
         await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":` });
         return;
@@ -478,13 +500,225 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
         const status = args?.status ? String(args.status) : 'Idle';
         const description = args?.description ? String(args.description) : null;
 
-        const created = await notionRepo.createTask({ title, tag, priority, dueDate, status });
-        if (description) await notionRepo.appendDescription({ pageId: created.id, text: description });
+        // Dedup check: if a similar active task exists, ask before creating a duplicate.
+        const key = normalizeTitleKey(title);
+        const candidates = (await tasksRepo.findTasks({ queryText: title, limit: 10 })).filter((t) => !t.tags.includes('Deprecated'));
+        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
+        if (dupe) {
+          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_task:${key}`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'notion.create_task',
+            payload: { title, tag, priority, dueDate, status, description },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, `Похоже, такая задача уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
+          return;
+        }
+
+        const created = await tasksRepo.createTask({ title, tag, priority, dueDate, status });
+        if (description) await tasksRepo.appendDescription({ pageId: created.id, text: description });
         bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
         return;
       }
 
-      // Actions that need a specific task: use either taskIndex (from last list) or pageId.
+      if (toolName === 'notion.list_ideas') {
+        const queryText = args?.queryText ? String(args.queryText) : null;
+        const status = args?.status ? String(args.status) : null;
+        const category = args?.category ? args.category : null;
+        const limit = args?.limit ? Number(args.limit) : 15;
+        const ideas = await ideasRepo.listIdeas({ category, status, queryText, limit });
+        const lines = ['Идеи:', ''];
+        for (const it of ideas.slice(0, 20)) {
+          lines.push(`- ${it.title}`);
+        }
+        bot.sendMessage(chatId, lines.join('\n'));
+        return;
+      }
+
+      if (toolName === 'notion.create_idea') {
+        const title = String(args?.title || '').trim();
+        const status = args?.status ? String(args.status) : 'Inbox';
+        const priority = args?.priority ? String(args.priority) : null;
+        const category = args?.category ?? null; // string|array|null
+        const source = args?.source ? String(args.source) : undefined;
+        const description = args?.description ? String(args.description) : null;
+
+        const key = normalizeTitleKey(title);
+        const candidates = await ideasRepo.listIdeas({ queryText: title, limit: 10 });
+        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
+        if (dupe) {
+          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_idea:${key}`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'notion.create_idea',
+            payload: { title, status, priority, category, source, description },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, `Похоже, такая идея уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
+          return;
+        }
+
+        const created = await ideasRepo.createIdea({ title, status, priority, category, source });
+        if (description) await ideasRepo.appendDescription({ pageId: created.id, text: description });
+        bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
+        return;
+      }
+
+      if (toolName === 'notion.update_idea') {
+        const patch = {
+          title: args?.title ? String(args.title) : undefined,
+          status: args?.status ? String(args.status) : undefined,
+          priority: args?.priority ? String(args.priority) : undefined,
+          category: args?.category !== undefined ? args.category : undefined,
+          source: args?.source !== undefined ? String(args.source) : undefined,
+        };
+        // resolve pageId via shared logic below
+        args = { ...args, _patch: patch };
+        toolName = 'notion.update_idea_resolve';
+      }
+
+      if (toolName === 'notion.archive_idea') {
+        toolName = 'notion.archive_idea_resolve';
+      }
+
+      if (toolName === 'notion.list_social_posts') {
+        const queryText = args?.queryText ? String(args.queryText) : null;
+        const status = args?.status ? String(args.status) : null;
+        const platform = args?.platform ?? null;
+        const limit = args?.limit ? Number(args.limit) : 15;
+        const posts = await socialRepo.listPosts({ platform, status, queryText, limit });
+        const lines = ['Посты (Social Media Planner):', ''];
+        for (const it of posts.slice(0, 20)) {
+          const plats = it.platform?.length ? ` [${it.platform.join(', ')}]` : '';
+          lines.push(`- ${it.title}${plats}`);
+        }
+        bot.sendMessage(chatId, lines.join('\n'));
+        return;
+      }
+
+      if (toolName === 'notion.create_social_post') {
+        const title = String(args?.title || '').trim();
+        const platform = args?.platform ?? null; // string|array|null
+        const postDate = args?.postDate ? String(args.postDate) : null;
+        const contentType = args?.contentType ?? null;
+        const status = args?.status ? String(args.status) : 'Post Idea';
+        const postUrl = args?.postUrl ? String(args.postUrl) : null;
+        const description = args?.description ? String(args.description) : null;
+
+        const { platform: platforms } = await socialRepo.getOptions();
+        if (!platform || (Array.isArray(platform) && !platform.length)) {
+          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'social.pick_platform',
+            payload: { draft: { title, postDate, contentType, status, postUrl, description }, platforms },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, 'Выбери платформу для поста:', buildPickPlatformKeyboard({ actionId, platforms }));
+          return;
+        }
+
+        const key = normalizeTitleKey(title);
+        const candidates = await socialRepo.listPosts({ queryText: title, limit: 10 });
+        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
+        if (dupe) {
+          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_social_post:${key}`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'notion.create_social_post',
+            payload: { title, platform, postDate, contentType, status, postUrl, description },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, `Похоже, такой пост уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
+          return;
+        }
+
+        const created = await socialRepo.createPost({ title, platform, postDate, contentType, status, postUrl });
+        if (description) await socialRepo.appendDescription({ pageId: created.id, text: description });
+        bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
+        return;
+      }
+
+      if (toolName === 'notion.update_social_post') {
+        const patch = {
+          title: args?.title ? String(args.title) : undefined,
+          status: args?.status ? String(args.status) : undefined,
+          platform: args?.platform !== undefined ? args.platform : undefined,
+          postDate: args?.postDate !== undefined ? String(args.postDate) : undefined,
+          contentType: args?.contentType !== undefined ? args.contentType : undefined,
+          postUrl: args?.postUrl !== undefined ? String(args.postUrl) : undefined,
+        };
+        args = { ...args, _patch: patch };
+        toolName = 'notion.update_social_post_resolve';
+      }
+
+      if (toolName === 'notion.archive_social_post') {
+        toolName = 'notion.archive_social_post_resolve';
+      }
+
+      // Domain-specific resolution (ideas/social) before falling back to tasks resolution.
+      if (toolName === 'notion.update_idea_resolve' || toolName === 'notion.archive_idea_resolve') {
+        const pageId = args?.pageId ? String(args.pageId) : null;
+        if (pageId) {
+          const actionId = makeId(`${chatId}:${Date.now()}:${toolName}:${pageId}`);
+          if (toolName === 'notion.update_idea_resolve') {
+            pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId, patch: args._patch }, createdAt: Date.now() });
+            bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
+            return;
+          }
+          pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_idea', payload: { pageId }, createdAt: Date.now() });
+          bot.sendMessage(chatId, 'Архивировать эту идею?', buildToolConfirmKeyboard({ actionId }));
+          return;
+        }
+
+        const queryText = String(args?.queryText || '').trim();
+        const candidates = (await ideasRepo.listIdeas({ queryText, limit: 10 })) || [];
+        if (candidates.length === 1) {
+          args = { ...args, pageId: candidates[0].id };
+          return await executeToolPlan({ chatId, from, toolName, args, userText });
+        }
+        if (candidates.length > 1) {
+          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName === 'notion.update_idea_resolve' ? 'notion.update_idea' : 'notion.archive_idea', payload: { _candidates: items, patch: args._patch }, createdAt: Date.now() });
+          bot.sendMessage(chatId, 'Нашел несколько идей. Выбери:', buildPickTaskKeyboard({ items }));
+          return;
+        }
+        bot.sendMessage(chatId, 'Не нашел идею. Уточни запрос.');
+        return;
+      }
+
+      if (toolName === 'notion.update_social_post_resolve' || toolName === 'notion.archive_social_post_resolve') {
+        const pageId = args?.pageId ? String(args.pageId) : null;
+        if (pageId) {
+          const actionId = makeId(`${chatId}:${Date.now()}:${toolName}:${pageId}`);
+          if (toolName === 'notion.update_social_post_resolve') {
+            pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_social_post', payload: { pageId, patch: args._patch }, createdAt: Date.now() });
+            bot.sendMessage(chatId, 'Применить изменения к посту?', buildToolConfirmKeyboard({ actionId }));
+            return;
+          }
+          pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_social_post', payload: { pageId }, createdAt: Date.now() });
+          bot.sendMessage(chatId, 'Архивировать этот пост?', buildToolConfirmKeyboard({ actionId }));
+          return;
+        }
+
+        const queryText = String(args?.queryText || '').trim();
+        const candidates = (await socialRepo.listPosts({ queryText, limit: 10 })) || [];
+        if (candidates.length === 1) {
+          args = { ...args, pageId: candidates[0].id };
+          return await executeToolPlan({ chatId, from, toolName, args, userText });
+        }
+        if (candidates.length > 1) {
+          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName === 'notion.update_social_post_resolve' ? 'notion.update_social_post' : 'notion.archive_social_post', payload: { _candidates: items, patch: args._patch }, createdAt: Date.now() });
+          bot.sendMessage(chatId, 'Нашел несколько постов. Выбери:', buildPickTaskKeyboard({ items }));
+          return;
+        }
+        bot.sendMessage(chatId, 'Не нашел пост. Уточни запрос.');
+        return;
+      }
+
+      // Tasks resolution: use either taskIndex (from last list) or pageId.
       const pageId = args?.pageId ? String(args.pageId) : null;
       const taskIndex = args?.taskIndex ? Number(args.taskIndex) : null;
       let resolvedPageId = pageId;
@@ -496,7 +730,7 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
 
       if (!resolvedPageId && args?.queryText) {
         const queryText = String(args.queryText).trim();
-        const fuzzy = await findTasksFuzzy({ notionRepo, queryText, limit: 10 });
+        const fuzzy = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 10 });
         const candidates = (fuzzy.tasks || []).filter((t) => !t.tags.includes('Deprecated'));
         if (candidates.length === 1) resolvedPageId = candidates[0].id;
         if (candidates.length > 1) {
@@ -545,6 +779,34 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
         const actionId = makeId(`${chatId}:${Date.now()}:notion.append_description:${resolvedPageId}`);
         pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.append_description', payload: { pageId: resolvedPageId, text }, createdAt: Date.now() });
         bot.sendMessage(chatId, 'Добавить это в описание задачи?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.update_idea_resolve') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_idea:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId: resolvedPageId, patch: args._patch }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.archive_idea_resolve') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.archive_idea:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_idea', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Архивировать эту идею?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.update_social_post_resolve') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_social_post:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_social_post', payload: { pageId: resolvedPageId, patch: args._patch }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Применить изменения к посту?', buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+
+      if (toolName === 'notion.archive_social_post_resolve') {
+        const actionId = makeId(`${chatId}:${Date.now()}:notion.archive_social_post:${resolvedPageId}`);
+        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_social_post', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
+        bot.sendMessage(chatId, 'Архивировать этот пост?', buildToolConfirmKeyboard({ actionId }));
         return;
       }
 
@@ -1133,23 +1395,61 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
         bot.answerCallbackQuery(query.id);
         try {
           if (kind === 'notion.mark_done') {
-            await notionRepo.markDone({ pageId: payload.pageId });
+            await tasksRepo.markDone({ pageId: payload.pageId });
             bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
             return;
           }
           if (kind === 'notion.move_to_deprecated') {
-            await notionRepo.moveToDeprecated({ pageId: payload.pageId });
+            await tasksRepo.moveToDeprecated({ pageId: payload.pageId });
             bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
             return;
           }
           if (kind === 'notion.update_task') {
-            await notionRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
+            await tasksRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
             bot.sendMessage(chatId, 'Готово. Обновил задачу.');
             return;
           }
           if (kind === 'notion.append_description') {
-            await notionRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
+            await tasksRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
             bot.sendMessage(chatId, 'Готово. Добавил описание.');
+            return;
+          }
+          if (kind === 'notion.create_task') {
+            const created = await tasksRepo.createTask(payload);
+            if (payload.description) await tasksRepo.appendDescription({ pageId: created.id, text: payload.description });
+            bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
+            return;
+          }
+          if (kind === 'notion.create_idea') {
+            const created = await ideasRepo.createIdea(payload);
+            if (payload.description) await ideasRepo.appendDescription({ pageId: created.id, text: payload.description });
+            bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
+            return;
+          }
+          if (kind === 'notion.create_social_post') {
+            const created = await socialRepo.createPost(payload);
+            if (payload.description) await socialRepo.appendDescription({ pageId: created.id, text: payload.description });
+            bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
+            return;
+          }
+          if (kind === 'notion.update_idea') {
+            await ideasRepo.updateIdea({ pageId: payload.pageId, ...payload.patch });
+            bot.sendMessage(chatId, 'Готово. Обновил идею.');
+            return;
+          }
+          if (kind === 'notion.archive_idea') {
+            await ideasRepo.archiveIdea({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Архивировал идею.');
+            return;
+          }
+          if (kind === 'notion.update_social_post') {
+            await socialRepo.updatePost({ pageId: payload.pageId, ...payload.patch });
+            bot.sendMessage(chatId, 'Готово. Обновил пост.');
+            return;
+          }
+          if (kind === 'notion.archive_social_post') {
+            await socialRepo.archivePost({ pageId: payload.pageId });
+            bot.sendMessage(chatId, 'Готово. Архивировал пост.');
             return;
           }
           bot.sendMessage(chatId, 'Неизвестная операция.');
@@ -1211,8 +1511,55 @@ async function registerTodoBot({ bot, notionRepo, databaseId, pgPool = null, bot
         bot.sendMessage(chatId, `Добавить описание к: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
         return;
       }
+      if (kind === 'notion.update_idea') {
+        bot.sendMessage(chatId, `Обновить идею: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.archive_idea') {
+        bot.sendMessage(chatId, `Архивировать идею: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.update_social_post') {
+        bot.sendMessage(chatId, `Обновить пост: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
+      if (kind === 'notion.archive_social_post') {
+        bot.sendMessage(chatId, `Архивировать пост: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
+        return;
+      }
 
       bot.sendMessage(chatId, 'Ок. Подтверди действие.', buildToolConfirmKeyboard({ actionId }));
+      return;
+    }
+
+    if (action && action.startsWith('plat:')) {
+      const [, actionId, idxRaw] = action.split(':');
+      const idx = Number(idxRaw);
+      const pending = pendingToolActionByChatId.get(chatId) || null;
+      if (!pending || pending.id !== actionId || pending.kind !== 'social.pick_platform') {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
+        return;
+      }
+      const platforms = pending.payload?.platforms || [];
+      if (!Number.isFinite(idx) || idx < 0 || idx >= platforms.length) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Не понял выбранную платформу.');
+        return;
+      }
+      const platformName = platforms[idx];
+      const draft = pending.payload?.draft || {};
+      pendingToolActionByChatId.delete(chatId);
+      bot.answerCallbackQuery(query.id);
+
+      // Re-run create with selected platform (will dedup and possibly ask to confirm).
+      await executeToolPlan({
+        chatId,
+        from: null,
+        toolName: 'notion.create_social_post',
+        args: { ...draft, platform: platformName },
+        userText: `platform_selected:${platformName}`,
+      });
       return;
     }
 

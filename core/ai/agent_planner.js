@@ -15,7 +15,7 @@ function buildSystemPrompt({ allowedCategories }) {
 
   return [
     'You are an assistant inside a Telegram todo bot.',
-    'You can answer normally OR ask the bot to call a tool (Notion tasks actions).',
+    'You can answer normally OR ask the bot to call a tool (Notion databases actions).',
     'Return STRICT JSON only (no markdown).',
     '',
     'Allowed categories (Tags):',
@@ -25,6 +25,7 @@ function buildSystemPrompt({ allowedCategories }) {
     '- Never invent a category. If unsure use "Inbox".',
     '- Do not claim you cannot access Notion. You CAN request a tool call.',
     '- For "delete": do NOT delete, use tool "notion.move_to_deprecated".',
+    '- For Ideas and Social, "delete" means archiving (use notion.archive_idea / notion.archive_social_post).',
     '- For "remove": prefer tool "notion.mark_done" unless user explicitly says deprecated.',
     '- If user asks to show/list tasks (e.g., "покажи", "список", "что у меня в Notion") you MUST use tool "notion.list_tasks".',
     '- When listing tasks, default behavior is to EXCLUDE completed (Done) tasks.',
@@ -35,7 +36,10 @@ function buildSystemPrompt({ allowedCategories }) {
     '  "type": "chat" | "tool",',
     '  "chat": { "message": string } | null,',
     '  "tool": {',
-    '    "name": "notion.list_tasks" | "notion.find_tasks" | "notion.mark_done" | "notion.move_to_deprecated" | "notion.update_task" | "notion.create_task" | "notion.append_description",',
+    '    "name":',
+    '      "notion.list_tasks" | "notion.find_tasks" | "notion.mark_done" | "notion.move_to_deprecated" | "notion.update_task" | "notion.create_task" | "notion.append_description"',
+    '      | "notion.list_ideas" | "notion.find_ideas" | "notion.create_idea" | "notion.update_idea" | "notion.archive_idea"',
+    '      | "notion.list_social_posts" | "notion.find_social_posts" | "notion.create_social_post" | "notion.update_social_post" | "notion.archive_social_post",',
     '    "args": object',
     '  } | null',
     '}',
@@ -49,6 +53,16 @@ function buildSystemPrompt({ allowedCategories }) {
     '- If user asks to include completed tasks: set args.includeDone=true.',
     '- If user refers to a task by a fuzzy name, use notion.find_tasks with queryText.',
     '- If user refers by number, the bot may provide lastShownList; you can request "taskIndex" in args.',
+    '',
+    '- If user talks about ideas (RU: "идея", "идеи") use Ideas tools.',
+    '  - list ideas: notion.list_ideas (args: category?, status?, queryText?, limit?)',
+    '  - create idea: notion.create_idea (args: title, category?, status?, priority?, source?, description?)',
+    '  - archive idea: notion.archive_idea (args: pageId or queryText/taskIndex)',
+    '',
+    '- If user talks about social posts (RU: "пост", "соцсети", platform names) use Social tools.',
+    '  - list posts: notion.list_social_posts (args: platform?, status?, dateOnOrAfter?, dateBefore?, queryText?, limit?)',
+    '  - create post: notion.create_social_post (args: title, platform?, postDate?, contentType?, status?, postUrl?, description?)',
+    '  - If platform is missing, ask a short clarifying question OR still call create_social_post with platform=null. The bot will ask to choose a platform.',
   ].join('\n');
 }
 

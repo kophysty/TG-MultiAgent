@@ -12,7 +12,7 @@
 ## Компоненты
 
 - `apps/todo_bot` - Telegram bot (polling) + Notion CRUD + AI (опционально).
-- `core/connectors/notion` - Notion API клиент и репозиторий задач.
+- `core/connectors/notion` - Notion API клиент и репозитории (Tasks, Ideas, Social Media Planner).
 - `core/dialogs/todo_bot.js` - команды и логика диалогов бота.
 - `infra/docker-compose.yml` - Postgres и n8n (опционально, пока не обязательны).
 
@@ -22,6 +22,8 @@
 - `TELEGRAM_BOT_TOKEN_PROD` - токен прод бота (`@my_temp_todo_bot`).
 - `NOTION_TOKEN` - токен Notion integration.
 - `NOTION_TASKS_DB_ID` - id базы задач (Tasks Base MultiAgent, current: `2d6535c900f08191a624d325f66dbe7c`).
+- `NOTION_IDEAS_DB_ID` - id базы идей (Ideas DB, current: `2d6535c900f080ea88d9cd555af22068`).
+- `NOTION_SOCIAL_DB_ID` - id базы Social Media Planner (current: `2d6535c900f080929233d249e1247d06`).
 - `OPENAI_API_KEY` - ключ OpenAI (для AI режима).
 
 ## Запуск (dev, polling)
