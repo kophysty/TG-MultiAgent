@@ -4,18 +4,9 @@ alwaysApply: true
 - **RULE**: Never save files in the root directory of the project.
 - **RATIONALE**: Instead of saving files in the root directory, save them in the appropriate subdirectory.
 
-- After creating or updating each new layout render prompt, include the version in the prompt name, create a new prompt, and log comments or issues about the current prompt in prompt_issues_log.md.
-- Never add or modify rules directly in ruleset.json. All rules are added manually by users through the KB, followed by taking a snapshot and compiling the ruleset through the compiler
-- Before rebuilding the container with cache cleaning, first check if the required code is already inside the container. In 99% of cases, the code is already there.
 - Never delete logs without my explicit approval, even if you believe the sprint is finished.
-- When saving memory, using mcp memory, follow the instructions from these commands file: .cursor/commands/save-context.md 
-- At the beginning of the work, load preferences from MCP Memory (kophy entity) according to C:\Users\kophy\.claude\CLAUDE.md
-- For RDS technical context: use RDS_Project_Index entity or invoke context-manager agent
-- When user says "запомни" - validate if it's a preference or technical context (see CLAUDE.md Decision Tree)
 - Inside the chat, we always talk in Russian.
-- Agentic and doc files always save on English.
-- I add rules to the database only manually. Do not attempt to add rules yourself.
+- Documentation files in this repo are stored in Russian.
 - All plans saved in .cursor/plans must have an ordinal number and date before their names.
 - Try to not use up keys letters in the file names 
 - If you are saving a file inside a folder where similar files already exist, try to continue the existing file naming style. if there are ordinal numbers and dates present, follow this practice and number your file accordingly, including the ordinal number and date.
-- After each AI render session, agree with the user on a single "golden" winner render for that session and append it to the ratings table in `docs/Render/GoldenRenders/index.md` with model scores and short human commentary.
