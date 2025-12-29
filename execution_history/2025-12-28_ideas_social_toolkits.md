@@ -74,3 +74,4 @@ Extend the existing "single planner + deterministic executor" architecture to su
 - Implement a consistent "pick from list by index" for Ideas and Social, similar to Tasks lastShownList.
 
 
+

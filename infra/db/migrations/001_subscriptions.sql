@@ -12,3 +12,4 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_enabled ON subscriptions (enabled);
 
 
+

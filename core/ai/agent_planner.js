@@ -62,7 +62,9 @@ function buildSystemPrompt({ allowedCategories }) {
     '- If user talks about social posts (RU: "пост", "соцсети", platform names) use Social tools.',
     '  - list posts: notion.list_social_posts (args: platform?, status?, dateOnOrAfter?, dateBefore?, queryText?, limit?)',
     '  - create post: notion.create_social_post (args: title, platform?, postDate?, contentType?, status?, postUrl?, description?)',
-    '  - If platform is missing, ask a short clarifying question OR still call create_social_post with platform=null. The bot will ask to choose a platform.',
+    '  - Prefer passing platform/status/contentType as exact Notion option names when possible.',
+    '  - If the user says platform in RU/EN ("фб/фейсбук/facebook", "тг/телеграм/telegram", etc.), infer the intended platform and pass it in args.platform.',
+    '  - If platform is missing or you are unsure, ask a short clarifying question OR call create_social_post with platform=null - the bot will show a platform picker.',
   ].join('\n');
 }
 

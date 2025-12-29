@@ -80,3 +80,4 @@ Stabilize the category logic so the bot never creates or suggests invalid catego
 - Add better logs/telemetry around chosen category + fallback reasons (no secrets).
 
 
+

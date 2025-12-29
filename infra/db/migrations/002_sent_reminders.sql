@@ -15,3 +15,4 @@ CREATE TABLE IF NOT EXISTS sent_reminders (
 CREATE INDEX IF NOT EXISTS idx_sent_reminders_remind_at ON sent_reminders (remind_at);
 
 
+

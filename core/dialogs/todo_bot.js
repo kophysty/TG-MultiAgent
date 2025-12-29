@@ -52,6 +52,28 @@ function oneLinePreview(text, maxLen) {
   return truncate(t, maxLen);
 }
 
+function inferDateFromText({ userText, tz }) {
+  const t = String(userText || '').toLowerCase();
+  if (!t) return null;
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (/\b(сегодня)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date() });
+  if (/\b(послезавтра)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + 2 * dayMs) });
+  if (/\b(завтра)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + dayMs) });
+
+  // Simple date patterns: YYYY-MM-DD or DD.MM.YYYY
+  const iso = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const ru = t.match(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/);
+  if (ru) {
+    const dd = String(ru[1]).padStart(2, '0');
+    const mm = String(ru[2]).padStart(2, '0');
+    return `${ru[3]}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
 function yyyyMmDdInTz({ tz, date = new Date() }) {
   // Returns YYYY-MM-DD in the specified IANA timezone.
   // Uses Intl, no extra deps.
@@ -293,6 +315,144 @@ function normalizeTitleKey(text) {
     .trim();
 }
 
+// Social platform aliases - normalize RU/EN variations to short tokens
+// that can be matched against Notion options (e.g., "FB", "TG  __ ForNoDevs").
+const SOCIAL_PLATFORM_ALIASES = {
+  facebook: 'fb',
+  fb: 'fb',
+  фб: 'fb',
+  фейсбук: 'fb',
+  facebok: 'fb',
+  telegram: 'tg',
+  tg: 'tg',
+  тг: 'tg',
+  телеграм: 'tg',
+  телега: 'tg',
+  tiktok: 'tiktok',
+  тикток: 'tiktok',
+  тиктокк: 'tiktok',
+  instagram: 'instagram',
+  insta: 'instagram',
+  инстаграм: 'instagram',
+  инста: 'instagram',
+  youtube: 'youtube',
+  yt: 'youtube',
+  ютуб: 'youtube',
+  linkedin: 'linkedin',
+  линкедин: 'linkedin',
+  twitter: 'twitter',
+  твиттер: 'twitter',
+  x: 'x',
+};
+
+const SOCIAL_STATUS_ALIASES = {
+  idea: 'idea',
+  postidea: 'idea',
+  draft: 'draft',
+  черновик: 'draft',
+  planned: 'planned',
+  запланировано: 'planned',
+  запланирован: 'planned',
+  published: 'published',
+  опубликовано: 'published',
+  опубликован: 'published',
+  done: 'published',
+};
+
+// Normalize arbitrary user/LLM input to a Notion option name.
+// This avoids Notion errors like "option not found" for select/multi_select/status fields.
+function normalizeOptionKey(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .trim();
+}
+
+function pickBestOptionMatch({ input, options, aliases = null }) {
+  if (input === null) return { value: null, unknown: null };
+  if (input === undefined) return { value: undefined, unknown: null };
+
+  const raw = String(input || '').trim();
+  if (!raw) return { value: null, unknown: null };
+
+  const opts = Array.isArray(options) ? options.filter(Boolean) : [];
+  if (!opts.length) return { value: raw, unknown: null };
+
+  // Exact match (case-insensitive) first.
+  const lower = raw.toLowerCase();
+  const exact = opts.find((o) => String(o).toLowerCase() === lower);
+  if (exact) return { value: exact, unknown: null };
+
+  const wantedKey = normalizeOptionKey(raw);
+  const byKey = new Map(opts.map((o) => [normalizeOptionKey(o), o]));
+  if (byKey.has(wantedKey)) return { value: byKey.get(wantedKey), unknown: null };
+
+  const token = aliases && Object.prototype.hasOwnProperty.call(aliases, wantedKey) ? aliases[wantedKey] : wantedKey;
+  const candidates = opts
+    .map((o) => ({ option: o, key: normalizeOptionKey(o) }))
+    .filter((x) => x.key === token || x.key.startsWith(token) || x.key.includes(token));
+
+  if (!candidates.length) return { value: null, unknown: raw };
+
+  // Prefer the shortest (more canonical) match.
+  candidates.sort((a, b) => a.key.length - b.key.length);
+  return { value: candidates[0].option, unknown: null };
+}
+
+function normalizeMultiOptionValue({ value, options, aliases = null }) {
+  if (value === null) return { value: null, unknown: [] };
+  if (value === undefined) return { value: undefined, unknown: [] };
+
+  const arr = Array.isArray(value) ? value : [value];
+  const normalized = [];
+  const unknown = [];
+  for (const it of arr) {
+    const { value: v, unknown: u } = pickBestOptionMatch({ input: it, options, aliases });
+    if (u) unknown.push(u);
+    if (v) normalized.push(v);
+  }
+  const uniq = Array.from(new Set(normalized));
+  return { value: uniq, unknown };
+}
+
+function normalizeSocialPlatform({ platform, platforms }) {
+  if (platform === null || platform === undefined) return { ok: true, value: platform, unknown: [] };
+  const { value, unknown } = normalizeMultiOptionValue({ value: platform, options: platforms, aliases: SOCIAL_PLATFORM_ALIASES });
+  if (unknown.length) return { ok: false, value: null, unknown };
+  // Preserve shape: string in, string out. Array in, array out.
+  if (!Array.isArray(platform)) return { ok: true, value: value[0] || null, unknown: [] };
+  return { ok: true, value, unknown: [] };
+}
+
+function normalizeSocialContentType({ contentType, contentTypes }) {
+  if (contentType === null || contentType === undefined) return { value: contentType };
+  const { value } = normalizeMultiOptionValue({ value: contentType, options: contentTypes, aliases: null });
+  if (!Array.isArray(contentType)) return { value: value[0] || null };
+  return { value };
+}
+
+function normalizeSocialStatus({ status, statuses }) {
+  if (status === null || status === undefined) return { value: status };
+  const { value } = pickBestOptionMatch({ input: status, options: statuses, aliases: SOCIAL_STATUS_ALIASES });
+  return { value: value || null };
+}
+
+function extractNotionErrorInfo(e) {
+  const status = e?.response?.status || null;
+  const data = e?.response?.data || null;
+  const code = data?.code || null;
+  const message = data?.message || e?.message || String(e);
+  const headers = e?.response?.headers || {};
+  const requestId = headers['x-request-id'] || headers['request-id'] || null;
+
+  let short = message;
+  if (code) short = `${code}: ${short}`;
+  if (status) short = `HTTP ${status} ${short}`;
+  if (requestId) short = `${short} (request_id: ${requestId})`;
+
+  return { status, code, message, requestId, short };
+}
+
 function buildPickPlatformKeyboard({ actionId, platforms }) {
   const rows = [];
   const perRow = 2;
@@ -311,6 +471,9 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
   debugLog('bot_init', { databaseIds });
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
+  // Legacy alias used by older command handlers and manual flows.
+  // Keep it to avoid accidental "notionRepo is not defined" runtime errors.
+  const notionRepo = tasksRepo;
 
   // Categories are dynamic from Notion Tags. Exclude Deprecated from any user-facing menus and AI.
   const notionCategories = (categoryOptions || []).filter((c) => String(c || '').trim().toLowerCase() !== 'deprecated');
@@ -540,9 +703,26 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
         const title = String(args?.title || '').trim();
         const status = args?.status ? String(args.status) : 'Inbox';
         const priority = args?.priority ? String(args.priority) : null;
-        const category = args?.category ?? null; // string|array|null
+        let category = args?.category ?? null; // string|array|null
         const source = args?.source ? String(args.source) : undefined;
         const description = args?.description ? String(args.description) : null;
+
+        // Prevent creating new Category options: match only against existing Notion options.
+        const { category: categoryOptions } = await ideasRepo.getOptions();
+        if (category !== null && category !== undefined) {
+          const norm = normalizeMultiOptionValue({ value: category, options: categoryOptions, aliases: null });
+          if (norm.unknown.length) {
+            // If we cannot match, prefer leaving empty rather than creating a new option.
+            const concept = (categoryOptions || []).find((c) => String(c).trim().toLowerCase() === 'concept') || null;
+            category = concept ? concept : null;
+          } else {
+            category = Array.isArray(category) ? norm.value : norm.value[0] || null;
+          }
+        } else if (category === null) {
+          // If category not provided, default to Concept if present (generic bucket).
+          const concept = (categoryOptions || []).find((c) => String(c).trim().toLowerCase() === 'concept') || null;
+          if (concept) category = concept;
+        }
 
         const key = normalizeTitleKey(title);
         const candidates = await ideasRepo.listIdeas({ queryText: title, limit: 10 });
@@ -566,11 +746,23 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
       }
 
       if (toolName === 'notion.update_idea') {
+        const { category: categoryOptions } = await ideasRepo.getOptions();
+        let normCategory = args?.category !== undefined ? args.category : undefined;
+        if (normCategory !== undefined && normCategory !== null) {
+          const norm = normalizeMultiOptionValue({ value: normCategory, options: categoryOptions, aliases: null });
+          if (norm.unknown.length) {
+            // Unknown category: do not change existing value (avoid clearing by mistake).
+            normCategory = undefined;
+          } else {
+            normCategory = Array.isArray(normCategory) ? norm.value : norm.value[0] || null;
+          }
+        }
+
         const patch = {
           title: args?.title ? String(args.title) : undefined,
           status: args?.status ? String(args.status) : undefined,
           priority: args?.priority ? String(args.priority) : undefined,
-          category: args?.category !== undefined ? args.category : undefined,
+          category: normCategory,
           source: args?.source !== undefined ? String(args.source) : undefined,
         };
         // resolve pageId via shared logic below
@@ -584,10 +776,26 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
 
       if (toolName === 'notion.list_social_posts') {
         const queryText = args?.queryText ? String(args.queryText) : null;
-        const status = args?.status ? String(args.status) : null;
-        const platform = args?.platform ?? null;
+        const rawStatus = args?.status ? String(args.status) : null;
+        const rawPlatform = args?.platform ?? null;
         const limit = args?.limit ? Number(args.limit) : 15;
-        const posts = await socialRepo.listPosts({ platform, status, queryText, limit });
+
+        const { platform: platforms, status: statuses } = await socialRepo.getOptions();
+        const status = normalizeSocialStatus({ status: rawStatus, statuses }).value;
+        const normPlatform = normalizeSocialPlatform({ platform: rawPlatform, platforms });
+        if (!normPlatform.ok) {
+          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform_list`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'social.pick_platform_list',
+            payload: { draft: { queryText, status, limit }, platforms },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, 'Выбери платформу для списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+          return;
+        }
+
+        const posts = await socialRepo.listPosts({ platform: normPlatform.value, status, queryText, limit });
         const lines = ['Посты (Social Media Planner):', ''];
         for (const it of posts.slice(0, 20)) {
           const plats = it.platform?.length ? ` [${it.platform.join(', ')}]` : '';
@@ -606,16 +814,40 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
         const postUrl = args?.postUrl ? String(args.postUrl) : null;
         const description = args?.description ? String(args.description) : null;
 
-        const { platform: platforms } = await socialRepo.getOptions();
+        const { platform: platforms, status: statuses, contentType: contentTypes } = await socialRepo.getOptions();
+        const normalizedStatus = normalizeSocialStatus({ status, statuses }).value || 'Post Idea';
+        const normalizedContentType = normalizeSocialContentType({ contentType, contentTypes }).value;
+        const inferredDate = !postDate ? inferDateFromText({ userText, tz }) : null;
+        const effectivePostDate = postDate || inferredDate;
+
         if (!platform || (Array.isArray(platform) && !platform.length)) {
           const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
           pendingToolActionByChatId.set(chatId, {
             id: actionId,
             kind: 'social.pick_platform',
-            payload: { draft: { title, postDate, contentType, status, postUrl, description }, platforms },
+            payload: {
+              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
+              platforms,
+            },
             createdAt: Date.now(),
           });
           bot.sendMessage(chatId, 'Выбери платформу для поста:', buildPickPlatformKeyboard({ actionId, platforms }));
+          return;
+        }
+
+        const normPlatform = normalizeSocialPlatform({ platform, platforms });
+        if (!normPlatform.ok) {
+          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'social.pick_platform',
+            payload: {
+              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
+              platforms,
+            },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, 'Не понял платформу. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
           return;
         }
 
@@ -627,26 +859,60 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
           pendingToolActionByChatId.set(chatId, {
             id: actionId,
             kind: 'notion.create_social_post',
-            payload: { title, platform, postDate, contentType, status, postUrl, description },
+            payload: {
+              title,
+              platform: normPlatform.value,
+              postDate: effectivePostDate,
+              contentType: normalizedContentType,
+              status: normalizedStatus,
+              postUrl,
+              description,
+            },
             createdAt: Date.now(),
           });
           bot.sendMessage(chatId, `Похоже, такой пост уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
           return;
         }
 
-        const created = await socialRepo.createPost({ title, platform, postDate, contentType, status, postUrl });
+        const created = await socialRepo.createPost({
+          title,
+          platform: normPlatform.value,
+          postDate: effectivePostDate,
+          contentType: normalizedContentType,
+          status: normalizedStatus,
+          postUrl,
+        });
         if (description) await socialRepo.appendDescription({ pageId: created.id, text: description });
         bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
         return;
       }
 
       if (toolName === 'notion.update_social_post') {
+        const { platform: platforms, status: statuses, contentType: contentTypes } = await socialRepo.getOptions();
+
+        // If user/LLM provided a platform that does not match Notion options, ask to pick it.
+        if (args?.platform !== undefined && args.platform !== null) {
+          const normPlatform = normalizeSocialPlatform({ platform: args.platform, platforms });
+          if (!normPlatform.ok) {
+            const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform_update`);
+            pendingToolActionByChatId.set(chatId, {
+              id: actionId,
+              kind: 'social.pick_platform_update',
+              payload: { draft: { ...args }, platforms },
+              createdAt: Date.now(),
+            });
+            bot.sendMessage(chatId, 'Не понял платформу для обновления. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+            return;
+          }
+          args = { ...args, platform: normPlatform.value };
+        }
+
         const patch = {
           title: args?.title ? String(args.title) : undefined,
-          status: args?.status ? String(args.status) : undefined,
+          status: args?.status ? normalizeSocialStatus({ status: String(args.status), statuses }).value : undefined,
           platform: args?.platform !== undefined ? args.platform : undefined,
           postDate: args?.postDate !== undefined ? String(args.postDate) : undefined,
-          contentType: args?.contentType !== undefined ? args.contentType : undefined,
+          contentType: args?.contentType !== undefined ? normalizeSocialContentType({ contentType: args.contentType, contentTypes }).value : undefined,
           postUrl: args?.postUrl !== undefined ? String(args.postUrl) : undefined,
         };
         args = { ...args, _patch: patch };
@@ -812,8 +1078,15 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
 
       bot.sendMessage(chatId, 'Неизвестная операция.');
     } catch (e) {
-      debugLog('tool_error', { tool: toolName, message: String(e?.message || e) });
-      bot.sendMessage(chatId, 'Ошибка при выполнении операции с Notion.');
+      const err = extractNotionErrorInfo(e);
+      debugLog('tool_error', { tool: toolName, message: err.message, code: err.code, status: err.status, requestId: err.requestId });
+
+      const debug = String(process.env.TG_DEBUG || '') === '1';
+      if (debug) {
+        bot.sendMessage(chatId, `Ошибка Notion: ${truncate(err.short, 800)}`);
+      } else {
+        bot.sendMessage(chatId, 'Ошибка при выполнении операции с Notion.');
+      }
     }
   }
 
@@ -882,7 +1155,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     debugLog('incoming_command', { chatId, command: '/struct', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'getDatabase' });
-      const db = await notionRepo.getDatabase();
+      const db = await tasksRepo.getDatabase();
       const props = db.properties || {};
       const lines = ['Structure of DB:\n'];
       for (const [k, v] of Object.entries(props)) {
@@ -906,7 +1179,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     debugLog('incoming_command', { chatId, command: '/list', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'listTasks' });
-      const tasks = await notionRepo.listTasks();
+      const tasks = await tasksRepo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const active = tasks.filter((t) => String(t.status || '').toLowerCase() !== 'done' && !t.tags.includes('Deprecated'));
 
@@ -954,7 +1227,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     debugLog('incoming_command', { chatId, command: '/today', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'listTasks' });
-      const tasks = await notionRepo.listTasks();
+      const tasks = await tasksRepo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const today = moment().startOf('day');
 
@@ -1536,7 +1809,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
       const [, actionId, idxRaw] = action.split(':');
       const idx = Number(idxRaw);
       const pending = pendingToolActionByChatId.get(chatId) || null;
-      if (!pending || pending.id !== actionId || pending.kind !== 'social.pick_platform') {
+      if (!pending || pending.id !== actionId || !String(pending.kind || '').startsWith('social.pick_platform')) {
         bot.answerCallbackQuery(query.id);
         bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
         return;
@@ -1549,10 +1822,33 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
       }
       const platformName = platforms[idx];
       const draft = pending.payload?.draft || {};
+      const kind = pending.kind;
       pendingToolActionByChatId.delete(chatId);
       bot.answerCallbackQuery(query.id);
 
-      // Re-run create with selected platform (will dedup and possibly ask to confirm).
+      if (kind === 'social.pick_platform_list') {
+        await executeToolPlan({
+          chatId,
+          from: null,
+          toolName: 'notion.list_social_posts',
+          args: { ...draft, platform: platformName },
+          userText: `platform_selected:${platformName}`,
+        });
+        return;
+      }
+
+      if (kind === 'social.pick_platform_update') {
+        await executeToolPlan({
+          chatId,
+          from: null,
+          toolName: 'notion.update_social_post',
+          args: { ...draft, platform: platformName },
+          userText: `platform_selected:${platformName}`,
+        });
+        return;
+      }
+
+      // Default: create (will dedup and possibly ask to confirm).
       await executeToolPlan({
         chatId,
         from: null,

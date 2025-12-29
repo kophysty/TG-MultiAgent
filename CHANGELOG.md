@@ -39,5 +39,15 @@ All notable changes to this project will be documented in this file.
 - Updated Tasks DB reference to the new Notion database.
 - Added Ideas DB and Social Media Planner toolkits (list/create/update/archive) and a platform picker for social post creation.
 - Added duplicate check for create actions (tasks, ideas, social posts) with confirmation.
+- Improved Social Media Planner robustness:
+  - Normalize platform/status/content type inputs (RU/EN synonyms + best-effort match to Notion options).
+  - Ask to pick platform via inline buttons if it cannot be matched.
+- Social post date inference:
+  - If user says "сегодня/завтра/послезавтра" the bot auto-fills `Post date` when creating a post.
+- Ideas category safety:
+  - Category is matched to existing Notion options to avoid accidentally creating new categories.
+- Fixed `/today`, `/list`, and `/struct` commands (Tasks repo reference).
+- Improved Notion error reporting in `TG_DEBUG=1` (shows a short reason).
+- Bumped todo bot version to `v0.1.7`.
 
 
