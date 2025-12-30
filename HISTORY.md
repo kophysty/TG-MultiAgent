@@ -86,4 +86,10 @@
   - Revoked chats are blocked for messages and callback queries.
 - Bumped todo bot version to `v0.1.16`.
 
+- Memory and preferences:
+  - Added Preferences module (Postgres schema + Notion UI sync).
+  - Reminders worker syncs preferences both ways (Notion edits win) and updates a per-chat profile summary.
+  - Planner context now includes a short memory summary for the current chat.
+  - Bumped todo bot version to `v0.1.17`.
+
 

@@ -99,7 +99,16 @@ function normalizePlan(obj) {
   return { type: 'tool', chat: null, tool: { name, args } };
 }
 
-async function planAgentAction({ apiKey, model = 'gpt-4.1-mini', userText, allowedCategories, lastShownList, tz, nowIso }) {
+async function planAgentAction({
+  apiKey,
+  model = 'gpt-4.1-mini',
+  userText,
+  allowedCategories,
+  lastShownList,
+  tz,
+  nowIso,
+  memorySummary,
+}) {
   const system = buildSystemPrompt({ allowedCategories });
 
   const tzName = String(tz || 'UTC').trim() || 'UTC';
@@ -128,6 +137,13 @@ async function planAgentAction({ apiKey, model = 'gpt-4.1-mini', userText, allow
     for (const item of lastShownList.slice(0, 20)) {
       ctxLines.push(`${item.index}. ${item.title}`);
     }
+  }
+
+  const mem = String(memorySummary || '').trim();
+  if (mem) {
+    ctxLines.push('');
+    ctxLines.push('User preferences (memory):');
+    ctxLines.push(mem);
   }
 
   const messages = [

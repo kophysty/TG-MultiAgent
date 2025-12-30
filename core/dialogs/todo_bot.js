@@ -4,6 +4,7 @@ const { aiAnalyzeMessage } = require('../ai/todo_intent');
 const todoBotPkg = require('../../apps/todo_bot/package.json');
 const { planAgentAction } = require('../ai/agent_planner');
 const { classifyConfirmIntent } = require('../ai/confirm_intent');
+const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
@@ -648,6 +649,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   debugLog('bot_init', { databaseIds });
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
+  const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
   const chatSecurity = createChatSecurity({ bot, pgPool });
   // Legacy alias used by older command handlers and manual flows.
   // Keep it to avoid accidental "notionRepo is not defined" runtime errors.
@@ -680,6 +682,36 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const tz = process.env.TG_TZ || 'Europe/Moscow';
   const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1-mini';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
+  const memoryCacheByChatId = new Map(); // chatId -> { summary, ts }
+
+  function buildMemorySummaryFromRows(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) return null;
+    const lines = [];
+    for (const p of items.slice(0, 20)) {
+      const key = String(p.pref_key || '').trim();
+      if (!key) continue;
+      const val = String(p.value_human || '').trim();
+      if (val) lines.push(`- ${key}: ${val}`);
+      else lines.push(`- ${key}`);
+    }
+    return lines.length ? lines.join('\n') : null;
+  }
+
+  async function getMemorySummaryForChat(chatId) {
+    if (!preferencesRepo) return null;
+    const cached = memoryCacheByChatId.get(chatId);
+    if (cached && Date.now() - cached.ts < 60_000) return cached.summary;
+
+    try {
+      const rows = await preferencesRepo.listPreferencesForChat({ chatId, activeOnly: true });
+      const summary = buildMemorySummaryFromRows(rows);
+      memoryCacheByChatId.set(chatId, { summary, ts: Date.now() });
+      return summary;
+    } catch {
+      return null;
+    }
+  }
 
   async function renderAndRememberJournalList({ chatId, entries, title }) {
     const shown = (entries || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
@@ -1292,6 +1324,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
     try {
       const lastShown = lastShownListByChatId.get(chatId) || [];
+      const memorySummary = await getMemorySummaryForChat(chatId);
       const plan = await planAgentAction({
         apiKey,
         model: aiModel,
@@ -1300,6 +1333,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         lastShownList: lastShown,
         tz,
         nowIso: new Date().toISOString(),
+        memorySummary,
       });
       if (plan.type === 'chat') {
         // Guard: for Journal-related intents, do not let the model ask the user to provide fields.

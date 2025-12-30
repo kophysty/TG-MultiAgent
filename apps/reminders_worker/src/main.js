@@ -3,8 +3,11 @@ const TelegramBot = require('node-telegram-bot-api');
 const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { RemindersRepo } = require('../../../core/connectors/postgres/reminders_repo');
+const { PreferencesRepo } = require('../../../core/connectors/postgres/preferences_repo');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
+const { NotionPreferencesRepo } = require('../../../core/connectors/notion/preferences_repo');
 const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
+const crypto = require('crypto');
 
 function parseHhMm(text, fallbackH = 11, fallbackM = 0) {
   const t = String(text || '').trim();
@@ -146,6 +149,39 @@ function buildDailySummaryText({ tz, today, dueTasks, inboxTasks }) {
   return lines.join('\n');
 }
 
+function md5(text) {
+  return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
+}
+
+function computePreferenceHash({ externalId, key, scope, category, active, valueHuman, valueJson }) {
+  // Keep stable: do not include timestamps here.
+  const payload = {
+    externalId: String(externalId || ''),
+    key: String(key || ''),
+    scope: String(scope || ''),
+    category: String(category || ''),
+    active: Boolean(active),
+    valueHuman: String(valueHuman || ''),
+    valueJson: String(valueJson || ''),
+  };
+  return md5(JSON.stringify(payload));
+}
+
+function buildPreferencesSummary(prefs) {
+  const items = Array.isArray(prefs) ? prefs : [];
+  if (!items.length) return '(пусто)';
+
+  const lines = [];
+  for (const p of items.slice(0, 30)) {
+    const key = String(p.pref_key || '').trim();
+    const val = String(p.value_human || '').trim();
+    if (!key) continue;
+    if (val) lines.push(`- ${key}: ${val}`);
+    else lines.push(`- ${key}`);
+  }
+  return lines.length ? lines.join('\n') : '(пусто)';
+}
+
 async function main() {
   hydrateProcessEnv();
 
@@ -156,6 +192,8 @@ async function main() {
   const { h: dayBeforeH, min: dayBeforeM } = parseHhMm(dayBeforeAt, 23, 0);
   const beforeMinutes = Number(process.env.TG_REMINDERS_BEFORE_MINUTES || 60);
   const pollSeconds = Math.max(10, Number(process.env.TG_REMINDERS_POLL_SECONDS || 60));
+  const memorySyncSeconds = Math.max(60, Number(process.env.TG_MEMORY_SYNC_SECONDS || 1800));
+  const memoryPushBatch = Math.min(50, Math.max(1, Number(process.env.TG_MEMORY_PUSH_BATCH || 20)));
 
   const mode = (process.env.TG_BOT_MODE || 'tests').toLowerCase(); // tests|prod (default for new subs)
   const tokenTests = process.env.TELEGRAM_BOT_TOKEN_TESTS || process.env.TELEGRAM_BOT_TOKEN;
@@ -174,14 +212,24 @@ async function main() {
   if (!pgPool) throw new Error('POSTGRES_URL missing for reminders worker.');
 
   const repo = new RemindersRepo({ pool: pgPool });
+  const prefsRepo = new PreferencesRepo({ pool: pgPool });
   const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
+
+  const preferencesDbId = process.env.NOTION_PREFERENCES_DB_ID || null;
+  const profilesDbId = process.env.NOTION_PREFERENCE_PROFILES_DB_ID || null;
+  const notionPrefsRepo =
+    preferencesDbId && profilesDbId
+      ? new NotionPreferencesRepo({ notionToken, preferencesDbId, profilesDbId })
+      : null;
 
   const botByMode = new Map();
   if (tokenTests) botByMode.set('tests', new TelegramBot(tokenTests, { polling: false, request: { timeout: 60_000 } }));
   if (tokenProd) botByMode.set('prod', new TelegramBot(tokenProd, { polling: false, request: { timeout: 60_000 } }));
 
   // eslint-disable-next-line no-console
-  console.log(`Reminders worker started. tz=${tz} pollSeconds=${pollSeconds} db=${databaseId} modeDefault=${mode}`);
+  console.log(
+    `Reminders worker started. tz=${tz} pollSeconds=${pollSeconds} db=${databaseId} modeDefault=${mode} memorySyncSeconds=${memorySyncSeconds}`
+  );
 
   async function tick() {
     const now = new Date();
@@ -291,13 +339,127 @@ async function main() {
     }
   }
 
+  async function memoryTick() {
+    if (!notionPrefsRepo) return;
+
+    // 1) Push pending updates to Notion (write-through with retries).
+    const queueItems = await prefsRepo.claimQueueBatch({ limit: memoryPushBatch, leaseSeconds: memorySyncSeconds });
+    for (const it of queueItems) {
+      try {
+        const kind = String(it.kind || '').trim();
+        const externalId = String(it.external_id || '').trim();
+        const payload = it.payload || {};
+
+        if (kind === 'pref_page_upsert') {
+          const res = await notionPrefsRepo.upsertPreferencePage(payload);
+          const pushedHash = it.payload_hash ? String(it.payload_hash) : null;
+          if (externalId && pushedHash) {
+            await prefsRepo.upsertSyncRow({
+              externalId,
+              chatId: payload.chatId,
+              scope: payload.scope || 'global',
+              key: payload.key,
+              notionPageId: res.pageId,
+              lastPushedHash: pushedHash,
+              lastPushedAt: new Date().toISOString(),
+            });
+          }
+        } else if (kind === 'profile_upsert') {
+          await notionPrefsRepo.upsertProfilePage(payload);
+        }
+
+        await prefsRepo.deleteQueueItem({ id: it.id });
+      } catch (e) {
+        const attempt = Number(it.attempt || 0);
+        const delay = Math.min(3600, Math.max(30, 30 * 2 ** Math.min(attempt + 1, 10)));
+        await prefsRepo.rescheduleQueueItem({ id: it.id, error: String(e?.message || e), delaySeconds: delay, incrementAttempt: true });
+      }
+    }
+
+    // 2) Pull user edits from Notion and apply to Postgres (Notion wins).
+    const sinceIso = await prefsRepo.getMaxLastSeenNotionEditedAt({ overlapSeconds: 120 });
+    let cursor = null;
+    const touchedChats = new Set();
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const page = await notionPrefsRepo.listPreferencesEditedSince({
+        sinceIso,
+        pageSize: 100,
+        startCursor: cursor,
+      });
+
+      for (const raw of page.results) {
+        const parsed = notionPrefsRepo.parsePreferencePage(raw);
+        if (!parsed.pageId) continue;
+        if (!Number.isFinite(parsed.chatId || NaN)) continue;
+        if (!parsed.key) continue;
+
+        const scope = parsed.scope || 'global';
+        const externalId = parsed.externalId || prefsRepo.makeExternalId({ chatId: parsed.chatId, scope, key: parsed.key });
+
+        const effectiveActive = Boolean(parsed.active) && !parsed.archived;
+        const computedHash = parsed.syncHash || computePreferenceHash({ ...parsed, externalId, active: effectiveActive });
+
+        const syncRow = await prefsRepo.getSyncRowByExternalId({ externalId });
+        const lastPushedHash = syncRow?.last_pushed_hash || null;
+
+        // If this matches our last pushed hash, treat it as already applied.
+        if (computedHash !== lastPushedHash) {
+          await prefsRepo.upsertPreference({
+            chatId: parsed.chatId,
+            scope,
+            category: parsed.category,
+            key: parsed.key,
+            valueJson: parsed.valueJson ? { text: parsed.valueJson } : {},
+            valueHuman: parsed.valueHuman || null,
+            active: effectiveActive,
+            source: 'notion',
+          });
+          touchedChats.add(Number(parsed.chatId));
+        }
+
+        await prefsRepo.upsertSyncRow({
+          externalId,
+          chatId: parsed.chatId,
+          scope,
+          key: parsed.key,
+          notionPageId: parsed.pageId,
+          lastSeenNotionEditedAt: parsed.notionEditedAt || new Date().toISOString(),
+        });
+      }
+
+      if (!page.hasMore) break;
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+
+    // 3) Update per-chat profile summary in Notion (write-through queue).
+    for (const chatId of touchedChats) {
+      const prefs = await prefsRepo.listPreferencesForChat({ chatId, activeOnly: true });
+      const summary = buildPreferencesSummary(prefs);
+      await prefsRepo.enqueueNotionSync({
+        kind: 'profile_upsert',
+        externalId: `profile:${chatId}`,
+        payload: { chatId, externalId: `profile:${chatId}`, summary, updatedAt: new Date().toISOString() },
+        payloadHash: md5(summary),
+      });
+    }
+  }
+
   // eslint-disable-next-line no-console
   console.log('Reminders worker loop started.');
+  let nextMemoryRunAt = 0;
   // Simple polling loop
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       await tick();
+      const nowMs = Date.now();
+      if (nowMs >= nextMemoryRunAt) {
+        await memoryTick();
+        nextMemoryRunAt = nowMs + memorySyncSeconds * 1000;
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('Reminders worker tick error:', sanitizeErrorForLog(e));

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Memory and preferences (MVP):
+  - Added Postgres tables for user preferences and a Notion sync queue.
+  - Added Notion Preferences DB + Profiles DB support.
+  - Reminders worker now syncs memory both ways (Notion edits win) and pushes profile summaries.
+  - Planner receives a short memory summary in context.
+
 - Initial repository bootstrap (git, ignore rules, baseline docs).
 - Added `docs/` with structured documentation exported from Notion "Base structure".
 - Updated `README.md` to point to Notion as the single source of truth and to `docs/index.md`.

@@ -4,7 +4,7 @@
 
 ## Версия
 
-- Текущая версия todo bot: `v0.1.16`
+- Текущая версия todo bot: `v0.1.17`
 
 ## Разделы
 
@@ -13,6 +13,7 @@
 - [Команды бота (список)](./commands.md)
 - [Voice режим (текущая реализация)](./voice.md)
 - [Напоминалки (текущая реализация)](./reminders.md)
+- [Memory и предпочтения (текущая реализация)](./memory.md)
 - [Безопасность (sessions, notify, revoke)](./security.md)
 
 ## Компоненты
@@ -31,7 +32,11 @@
 - `NOTION_IDEAS_DB_ID` - id базы идей (Ideas DB, current: `2d6535c900f080ea88d9cd555af22068`).
 - `NOTION_SOCIAL_DB_ID` - id базы Social Media Planner (current: `2d6535c900f080929233d249e1247d06`).
 - `NOTION_JOURNAL_DB_ID` - id базы дневника Journal (current: `86434dfd454448599233c1832542cf79`).
+- `NOTION_PREFERENCES_DB_ID` - id базы Preferences (current: `2d9535c900f081669a37f10ba1c31fc0`).
+- `NOTION_PREFERENCE_PROFILES_DB_ID` - id базы Preference Profiles (current: `2d9535c900f08127909bec232d8c99e0`).
 - `OPENAI_API_KEY` - ключ OpenAI (для AI режима).
+- `TG_MEMORY_SYNC_SECONDS` - период синка memory (сек), default 1800.
+- `TG_MEMORY_PUSH_BATCH` - размер пачки push в Notion за тик, default 20.
 
 ## Запуск (dev, polling)
 
