@@ -4,6 +4,7 @@
 
 - `docs/roadmap/` - план и целевая архитектура (то, к чему идем).
 - `docs/current/` - фактически реализованный функционал (то, что уже работает).
+- `docs/devops/` - runbook: запуск, обслуживание и типовые технические манипуляции.
 
 Если в репозитории и Notion есть расхождение - сначала правим Notion, затем обновляем документацию.
 
@@ -18,6 +19,7 @@
 
 - [Текущее состояние (current)](./current/index.md)
 - [План (roadmap)](./roadmap/index.md)
+- [DevOps (runbook)](./devops/index.md)
 - [Execution history](../execution_history/index.md)
 
 ## Оглавление (roadmap)

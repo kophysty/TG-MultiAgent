@@ -7,6 +7,8 @@ alwaysApply: true
 - Never delete logs without my explicit approval, even if you believe the sprint is finished.
 - Inside the chat, we always talk in Russian.
 - Documentation files in this repo are stored in Russian.
+- When making functional changes to the bot or worker, bump the relevant app version (for the bot: `apps/todo_bot/package.json`) so `/start` shows the updated version after restart.
+- When using Notion MCP, use data_source_id (from Notion MCP search results), not database_id from Notion URLs. If you have only database_id, first find the data source via MCP search and map via parent.database_id.
 - All plans saved in .cursor/plans must have an ordinal number and date before their names.
 - Try to not use up keys letters in the file names 
 - If you are saving a file inside a folder where similar files already exist, try to continue the existing file naming style. if there are ordinal numbers and dates present, follow this practice and number your file accordingly, including the ordinal number and date.

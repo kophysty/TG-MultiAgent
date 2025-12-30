@@ -28,5 +28,7 @@ Use: `execution_history/sprint_template.md`
 - `2025-12-26_tool_buttons_fuzzy_search.md` - Tool confirm buttons + fuzzy search + safe updates (no tag loss)
 - `2025-12-27_reminders_worker.md` - Reminders worker MVP (Tasks DB + Postgres dedup)
 - `2025-12-28_ideas_social_toolkits.md` - Ideas + Social Media Planner toolkits (CRUD + archive + dedup)
+- `2025-12-29_todo_bot_refactor.md` - Рефакторинг `todo_bot.js` (вынос executor, callback_query, voice и helpers в модули)
+- `2025-12-30_time_ctx_due_datetime_ideas_area.md` - Контекст времени для AI, парсинг due datetime, Ideas Area options и кнопка Start
 
 

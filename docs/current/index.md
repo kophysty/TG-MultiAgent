@@ -4,7 +4,7 @@
 
 ## Версия
 
-- Текущая версия todo bot: `v0.1.7`
+- Текущая версия todo bot: `v0.1.14`
 
 ## Разделы
 
@@ -16,7 +16,7 @@
 ## Компоненты
 
 - `apps/todo_bot` - Telegram bot (polling) + Notion CRUD + AI (опционально).
-- `core/connectors/notion` - Notion API клиент и репозитории (Tasks, Ideas, Social Media Planner).
+- `core/connectors/notion` - Notion API клиент и репозитории (Tasks, Ideas, Social Media Planner, Journal).
 - `core/dialogs/todo_bot.js` - команды и логика диалогов бота.
 - `infra/docker-compose.yml` - Postgres и n8n (опционально, пока не обязательны).
 
@@ -28,6 +28,7 @@
 - `NOTION_TASKS_DB_ID` - id базы задач (Tasks Base MultiAgent, current: `2d6535c900f08191a624d325f66dbe7c`).
 - `NOTION_IDEAS_DB_ID` - id базы идей (Ideas DB, current: `2d6535c900f080ea88d9cd555af22068`).
 - `NOTION_SOCIAL_DB_ID` - id базы Social Media Planner (current: `2d6535c900f080929233d249e1247d06`).
+- `NOTION_JOURNAL_DB_ID` - id базы дневника Journal (current: `86434dfd454448599233c1832542cf79`).
 - `OPENAI_API_KEY` - ключ OpenAI (для AI режима).
 
 ## Запуск (dev, polling)

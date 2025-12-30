@@ -49,5 +49,16 @@ All notable changes to this project will be documented in this file.
 - Fixed `/today`, `/list`, and `/struct` commands (Tasks repo reference).
 - Improved Notion error reporting in `TG_DEBUG=1` (shows a short reason).
 - Bumped todo bot version to `v0.1.7`.
+- Refactored `core/dialogs/todo_bot.js` by extracting large blocks into modules (`todo_bot_helpers`, `todo_bot_executor`, `todo_bot_callbacks`, `todo_bot_voice`) without changing bot behavior.
+
+- Time and timezone robustness:
+  - The agent planner now receives current time context and `TG_TZ` to interpret relative dates correctly.
+  - Task creation parses "today/tomorrow/day after tomorrow + time" from user text into ISO datetime with timezone offset to avoid UTC shifts.
+- Ideas DB improvements:
+  - Added `Area` auto-fill from context, matching existing options.
+  - If `Area` is `select` or `multi_select` and no option matches, the bot can create a new option (without duplicates) and set it.
+- Bot UX:
+  - Reply keyboard now uses `Start` button (works the same as `/start`) instead of showing `/struct` by default.
+- Bumped todo bot version to `v0.1.14`.
 
 

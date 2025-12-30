@@ -7,9 +7,37 @@ class NotionIdeasRepo {
     this._schema = null;
   }
 
+  _normalizeOptionKey(text) {
+    return String(text || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '')
+      .trim();
+  }
+
+  _uniqNames(names) {
+    const arr = (Array.isArray(names) ? names : [names])
+      .map((x) => String(x || '').trim())
+      .filter(Boolean);
+    const out = [];
+    const seen = new Set();
+    for (const n of arr) {
+      const k = this._normalizeOptionKey(n);
+      if (!k) continue;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(n);
+    }
+    return out;
+  }
+
   async getDatabase() {
     const resp = await this._http.get(`databases/${this._dbId}`);
     return resp.data;
+  }
+
+  _richTextToPlainText(richTextArr) {
+    const arr = Array.isArray(richTextArr) ? richTextArr : [];
+    return arr.map((t) => t.plain_text || '').join('').trim();
   }
 
   async _ensureSchema() {
@@ -28,7 +56,136 @@ class NotionIdeasRepo {
     const category = db.properties?.Category?.multi_select?.options?.map((o) => o.name) || [];
     const priority = db.properties?.Priority?.select?.options?.map((o) => o.name) || [];
     const status = db.properties?.Status?.status?.options?.map((o) => o.name) || [];
-    return { category, priority, status };
+    const area =
+      db.properties?.Area?.select?.options?.map((o) => o.name) ||
+      db.properties?.Area?.multi_select?.options?.map((o) => o.name) ||
+      [];
+    const tags =
+      db.properties?.Tags?.multi_select?.options?.map((o) => o.name) ||
+      db.properties?.Tags?.select?.options?.map((o) => o.name) ||
+      [];
+    const areaType = db.properties?.Area?.type || null;
+    const tagsType = db.properties?.Tags?.type || null;
+    return { category, priority, status, area, tags, areaType, tagsType };
+  }
+
+  async _ensureSelectOptions({ propertyName, desiredNames }) {
+    const want = this._uniqNames(desiredNames);
+    if (!want.length) return { added: [], resolved: [] };
+
+    const db = await this.getDatabase();
+    const prop = db.properties?.[propertyName];
+    const current = prop?.select?.options || [];
+    const byKey = new Map(current.map((o) => [this._normalizeOptionKey(o.name), o]));
+
+    const toAdd = [];
+    for (const name of want) {
+      const key = this._normalizeOptionKey(name);
+      if (!key) continue;
+      if (byKey.has(key)) continue;
+      toAdd.push({ name, color: 'default' });
+    }
+
+    if (!toAdd.length) {
+      const resolved = want.map((n) => byKey.get(this._normalizeOptionKey(n))?.name || n);
+      return { added: [], resolved };
+    }
+
+    const merged = [
+      ...current.map((o) => ({ id: o.id, name: o.name, color: o.color || 'default' })),
+      ...toAdd,
+    ];
+    const seen = new Set();
+    const options = [];
+    for (const o of merged) {
+      const key = this._normalizeOptionKey(o.name);
+      if (!key) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const out = { name: o.name, color: o.color || 'default' };
+      if (o.id) out.id = o.id;
+      options.push(out);
+    }
+
+    await this._http.patch(`databases/${this._dbId}`, {
+      properties: {
+        [propertyName]: { select: { options } },
+      },
+    });
+    this._schema = null;
+
+    const db2 = await this.getDatabase();
+    const current2 = db2.properties?.[propertyName]?.select?.options || [];
+    const byKey2 = new Map(current2.map((o) => [this._normalizeOptionKey(o.name), o]));
+    const resolved = want.map((n) => byKey2.get(this._normalizeOptionKey(n))?.name || n);
+    return { added: toAdd.map((x) => x.name), resolved };
+  }
+
+  async _ensureMultiSelectOptions({ propertyName, desiredNames }) {
+    const want = this._uniqNames(desiredNames);
+    if (!want.length) return { added: [], resolved: [] };
+
+    const db = await this.getDatabase();
+    const prop = db.properties?.[propertyName];
+    const current = prop?.multi_select?.options || [];
+    const byKey = new Map(current.map((o) => [this._normalizeOptionKey(o.name), o]));
+
+    const toAdd = [];
+    for (const name of want) {
+      const key = this._normalizeOptionKey(name);
+      if (!key) continue;
+      if (byKey.has(key)) continue;
+      toAdd.push({ name, color: 'default' });
+    }
+
+    if (!toAdd.length) {
+      const resolved = want.map((n) => byKey.get(this._normalizeOptionKey(n))?.name || n);
+      return { added: [], resolved };
+    }
+
+    const merged = [
+      ...current.map((o) => ({ id: o.id, name: o.name, color: o.color || 'default' })),
+      ...toAdd,
+    ];
+    const seen = new Set();
+    const options = [];
+    for (const o of merged) {
+      const key = this._normalizeOptionKey(o.name);
+      if (!key) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const out = { name: o.name, color: o.color || 'default' };
+      if (o.id) out.id = o.id;
+      options.push(out);
+    }
+
+    await this._http.patch(`databases/${this._dbId}`, {
+      properties: {
+        [propertyName]: { multi_select: { options } },
+      },
+    });
+    this._schema = null;
+
+    const db2 = await this.getDatabase();
+    const current2 = db2.properties?.[propertyName]?.multi_select?.options || [];
+    const byKey2 = new Map(current2.map((o) => [this._normalizeOptionKey(o.name), o]));
+    const resolved = want.map((n) => byKey2.get(this._normalizeOptionKey(n))?.name || n);
+    return { added: toAdd.map((x) => x.name), resolved };
+  }
+
+  async ensureAreaOptions({ desiredNames }) {
+    const want = this._uniqNames(desiredNames);
+    if (!want.length) return { added: [], resolved: [] };
+
+    const db = await this.getDatabase();
+    const prop = db.properties?.Area;
+    const type = prop?.type || null;
+
+    if (type === 'select') return await this._ensureSelectOptions({ propertyName: 'Area', desiredNames: want });
+    if (type === 'multi_select') return await this._ensureMultiSelectOptions({ propertyName: 'Area', desiredNames: want });
+
+    // For rich_text (or missing Area), we cannot add options.
+    return { added: [], resolved: want };
   }
 
   async listIdeas({ category, status, queryText, limit = 20 } = {}) {
@@ -61,7 +218,11 @@ class NotionIdeasRepo {
     return (resp.data.results || []).map((p) => this._pageToIdea(p));
   }
 
-  async createIdea({ title, category, status, priority, source }) {
+  _propType(schema, name) {
+    return schema?.[name]?.type || null;
+  }
+
+  async createIdea({ title, category, status, priority, source, area, tags }) {
     const schema = await this._ensureSchema();
     const props = {};
 
@@ -82,6 +243,19 @@ class NotionIdeasRepo {
       const s = String(source || '').trim();
       props.Source = { rich_text: s ? [{ type: 'text', text: { content: s } }] : [] };
     }
+    if (area !== undefined && this._hasProp(schema, 'Area')) {
+      const t = this._propType(schema, 'Area');
+      const a = String(area || '').trim();
+      if (t === 'select') props.Area = { select: a ? { name: a } : null };
+      else if (t === 'multi_select') props.Area = { multi_select: a ? [{ name: a }] : [] };
+      else if (t === 'rich_text') props.Area = { rich_text: a ? [{ type: 'text', text: { content: a } }] : [] };
+    }
+    if (tags !== undefined && this._hasProp(schema, 'Tags')) {
+      const t = this._propType(schema, 'Tags');
+      const arr = Array.isArray(tags) ? tags : tags ? [tags] : [];
+      if (t === 'multi_select') props.Tags = { multi_select: arr.filter(Boolean).map((x) => ({ name: x })) };
+      else if (t === 'select') props.Tags = { select: arr[0] ? { name: arr[0] } : null };
+    }
 
     const resp = await this._http.post('pages', {
       parent: { database_id: this._dbId },
@@ -90,7 +264,7 @@ class NotionIdeasRepo {
     return this._pageToIdea(resp.data);
   }
 
-  async updateIdea({ pageId, title, category, status, priority, source }) {
+  async updateIdea({ pageId, title, category, status, priority, source, area, tags }) {
     const schema = await this._ensureSchema();
     const props = {};
 
@@ -115,6 +289,24 @@ class NotionIdeasRepo {
     if (source !== undefined && this._hasProp(schema, 'Source')) {
       const s = String(source || '').trim();
       props.Source = { rich_text: s ? [{ type: 'text', text: { content: s } }] : [] };
+    }
+    if (area !== undefined && this._hasProp(schema, 'Area')) {
+      const t = this._propType(schema, 'Area');
+      const a = String(area || '').trim();
+      if (t === 'select') props.Area = { select: a ? { name: a } : null };
+      else if (t === 'multi_select') props.Area = { multi_select: a ? [{ name: a }] : [] };
+      else if (t === 'rich_text') props.Area = { rich_text: a ? [{ type: 'text', text: { content: a } }] : [] };
+    }
+    if (tags !== undefined && this._hasProp(schema, 'Tags')) {
+      const t = this._propType(schema, 'Tags');
+      const arr = Array.isArray(tags) ? tags : tags ? [tags] : [];
+      if (t === 'multi_select') {
+        if (tags === null) props.Tags = { multi_select: [] };
+        else props.Tags = { multi_select: arr.filter(Boolean).map((x) => ({ name: x })) };
+      } else if (t === 'select') {
+        if (tags === null) props.Tags = { select: null };
+        else props.Tags = { select: arr[0] ? { name: arr[0] } : null };
+      }
     }
 
     if (!Object.keys(props).length) {
@@ -152,6 +344,8 @@ class NotionIdeasRepo {
     const titleParts = props.Idea?.title || [];
     const title = titleParts.map((p) => p.plain_text || '').join('').trim();
     const categories = (props.Category?.multi_select || []).map((t) => t.name).filter(Boolean);
+    const area = props.Area?.select?.name || this._richTextToPlainText(props.Area?.rich_text) || null;
+    const tags = (props.Tags?.multi_select || []).map((t) => t.name).filter(Boolean);
     return {
       id: page.id,
       url: page.url,
@@ -159,6 +353,8 @@ class NotionIdeasRepo {
       status: props.Status?.status?.name || null,
       priority: props.Priority?.select?.name || null,
       categories,
+      area,
+      tags,
     };
   }
 }

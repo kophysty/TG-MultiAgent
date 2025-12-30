@@ -6,6 +6,7 @@ const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
 const { NotionIdeasRepo } = require('../../../core/connectors/notion/ideas_repo');
 const { NotionSocialRepo } = require('../../../core/connectors/notion/social_repo');
+const { NotionJournalRepo } = require('../../../core/connectors/notion/journal_repo');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { registerTodoBot } = require('../../../core/dialogs/todo_bot');
 
@@ -35,6 +36,7 @@ async function main() {
 
   const ideasDbId = process.env.NOTION_IDEAS_DB_ID || '2d6535c900f080ea88d9cd555af22068';
   const socialDbId = process.env.NOTION_SOCIAL_DB_ID || '2d6535c900f080929233d249e1247d06';
+  const journalDbId = process.env.NOTION_JOURNAL_DB_ID || '86434dfd454448599233c1832542cf79';
 
   const pgPool = createPgPoolFromEnv(); // optional, enabled when POSTGRES_URL is provided
 
@@ -47,13 +49,15 @@ async function main() {
   const tasksRepo = new NotionTasksRepo({ notionToken, databaseId });
   const ideasRepo = new NotionIdeasRepo({ notionToken, databaseId: ideasDbId });
   const socialRepo = new NotionSocialRepo({ notionToken, databaseId: socialDbId });
+  const journalRepo = new NotionJournalRepo({ notionToken, databaseId: journalDbId });
 
   await registerTodoBot({
     bot,
     tasksRepo,
     ideasRepo,
     socialRepo,
-    databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId },
+    journalRepo,
+    databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
     pgPool,
     botMode: mode,
   });

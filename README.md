@@ -8,6 +8,7 @@ Telegram агент, который работает с Notion как с пер�
 - [Tasks Base MultiAgent (Notion DB, CRUD тесты)](https://www.notion.so/web3-future/2d6535c900f08191a624d325f66dbe7c?v=2d6535c900f08188b3cf000c5b8f5039)
 - [Ideas DB (Notion DB)](https://www.notion.so/web3-future/2d6535c900f080ea88d9cd555af22068?v=2d6535c900f080089afa000c7b267b7a)
 - [Social Media Planner (Notion DB)](https://www.notion.so/web3-future/2d6535c900f080929233d249e1247d06)
+- [Journal (Notion DB)](https://www.notion.so/web3-future/86434dfd454448599233c1832542cf79?v=9b43fa650cd7433b8218cf0732608dea)
 
 Если в репозитории и Notion есть расхождение - сначала правим Notion, затем обновляем `docs/`.
 

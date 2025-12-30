@@ -66,4 +66,16 @@
 - Fixed `/today`, `/list`, and `/struct` commands (Tasks repo reference).
 - Bumped todo bot version to `v0.1.7`.
 
+## 2025-12-30
+
+- Time and timezone:
+  - Agent planner receives current time context and `TG_TZ`.
+  - Task creation parses relative due datetime from user text (e.g. "сегодня в 15:00") into ISO with timezone offset to avoid UTC shifts.
+- Ideas DB:
+  - Added `Area` inference and matching to existing options.
+  - If `Area` is `select` or `multi_select` and no option matches, the bot can create a new option (without duplicates) and set it.
+- Bot UI:
+  - Reply keyboard now uses `Start` button (works the same as `/start`) instead of showing `/struct` by default.
+- Bumped todo bot version to `v0.1.14`.
+
 

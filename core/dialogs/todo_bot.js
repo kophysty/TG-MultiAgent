@@ -2,13 +2,11 @@ const crypto = require('crypto');
 const moment = require('moment');
 const { aiAnalyzeMessage } = require('../ai/todo_intent');
 const todoBotPkg = require('../../apps/todo_bot/package.json');
-const fs = require('fs');
-
-const { downloadTelegramFileToTmp } = require('../connectors/telegram/files');
-const { convertOggToWav16kMono } = require('../connectors/stt/ffmpeg');
-const { transcribeWavWithOpenAI } = require('../connectors/stt/openai_whisper');
 const { planAgentAction } = require('../ai/agent_planner');
 const { classifyConfirmIntent } = require('../ai/confirm_intent');
+const { createToolExecutor } = require('./todo_bot_executor');
+const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
+const { handleVoiceMessage } = require('./todo_bot_voice');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -57,9 +55,11 @@ function inferDateFromText({ userText, tz }) {
   if (!t) return null;
 
   const dayMs = 24 * 60 * 60 * 1000;
-  if (/\b(сегодня)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date() });
-  if (/\b(послезавтра)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + 2 * dayMs) });
-  if (/\b(завтра)\b/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + dayMs) });
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  // Order matters: "послезавтра" contains "завтра".
+  if (/(day\s+after\s+tomorrow)/.test(t) || /(послезавтра)/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + 2 * dayMs) });
+  if (/(tomorrow)/.test(t) || /(завтра)/.test(t)) return yyyyMmDdInTz({ tz, date: new Date(Date.now() + dayMs) });
+  if (/(today)/.test(t) || /(сегодня)/.test(t)) return yyyyMmDdInTz({ tz, date: new Date() });
 
   // Simple date patterns: YYYY-MM-DD or DD.MM.YYYY
   const iso = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
@@ -72,6 +72,30 @@ function inferDateFromText({ userText, tz }) {
   }
 
   return null;
+}
+
+function normalizeDueDateInputLocal({ dueDate, tz }) {
+  if (dueDate === null || dueDate === undefined) return dueDate;
+  const raw = String(dueDate || '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}([tT ].*)?$/.test(raw)) return raw;
+  const inferred = inferDateFromText({ userText: raw, tz });
+  if (inferred) return inferred;
+  return null;
+}
+
+function addDaysToYyyyMmDd(dateStr, days) {
+  const m = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const base = Date.UTC(y, mo - 1, d);
+  const next = new Date(base + Number(days || 0) * 24 * 60 * 60 * 1000);
+  const yyyy = String(next.getUTCFullYear()).padStart(4, '0');
+  const mm = String(next.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(next.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function yyyyMmDdInTz({ tz, date = new Date() }) {
@@ -95,9 +119,10 @@ function inferListHintsFromText(userText) {
   // - default: exclude Done tasks from lists
   // - only: show only Done tasks when user explicitly asks for completed
   // - include: show all tasks including Done when user explicitly asks to include completed
-  const hasDoneWords = /\b(выполненн|выполнен|завершенн|завершен|сделанн|сделан|done|completed)\b/.test(t);
-  const hasNegation = /\b(не\s*выполн|невыполн|не\s*заверш|незаверш|не\s*сделан|несделан)\b/.test(t);
-  const hasIncludeWords = /\b(включая|с\s+учет(ом)?|с\s+выполненными|с\s+завершенными|все\s+.*выполн)\b/.test(t);
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  const hasDoneWords = /(выполненн|выполнен|завершенн|завершен|сделанн|сделан|done|completed)/.test(t);
+  const hasNegation = /(не\s*выполн|невыполн|не\s*заверш|незаверш|не\s*сделан|несделан)/.test(t);
+  const hasIncludeWords = /(включая|с\s+учет(ом)?|с\s+выполненными|с\s+завершенными|все\s+.*выполн)/.test(t);
 
   let doneMode = 'exclude';
   if (hasDoneWords && !hasNegation) {
@@ -106,13 +131,13 @@ function inferListHintsFromText(userText) {
 
   // "today" list intent: due today + inbox (alias).
   // Prefer "на сегодня" phrasing to avoid collision with "Today=Inbox" alias.
-  const isTodayPreset = /\bна\s+сегодня\b/.test(t) || /\bсегодняшн/.test(t) || /\bзадач(и|а)\s+на\s+сегодня\b/.test(t);
+  const isTodayPreset = /(на\s+сегодня)/.test(t) || /(сегодняшн)/.test(t) || /(задач(и|а)\s+на\s+сегодня)/.test(t);
   if (isTodayPreset) return { preset: 'today', tag: null, doneMode };
 
   // Category synonyms (RU -> Notion Tag)
-  if (/\bинбокс\b/.test(t) || /\bвходящ/.test(t) || /\btoday\b/.test(t)) return { preset: null, tag: 'Inbox', doneMode };
-  if (/\bдомашн/.test(t) || /\bдом\b/.test(t)) return { preset: null, tag: 'Home', doneMode };
-  if (/\bрабоч/.test(t) || /\bработа\b/.test(t)) return { preset: null, tag: 'Work', doneMode };
+  if (/(инбокс)/.test(t) || /(входящ)/.test(t) || /(^|\W)today($|\W)/.test(t)) return { preset: null, tag: 'Inbox', doneMode };
+  if (/(домашн)/.test(t) || /(дом)/.test(t)) return { preset: null, tag: 'Home', doneMode };
+  if (/(рабоч)/.test(t) || /(работа)/.test(t)) return { preset: null, tag: 'Work', doneMode };
 
   return { preset: null, tag: null, doneMode };
 }
@@ -415,6 +440,152 @@ function normalizeMultiOptionValue({ value, options, aliases = null }) {
   return { value: uniq, unknown };
 }
 
+function clampRating1to5(value) {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const rounded = Math.round(n);
+  return Math.max(1, Math.min(5, rounded));
+}
+
+function hasNonEmptyOptionInput(value) {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.some((x) => String(x || '').trim());
+  return Boolean(String(value || '').trim());
+}
+
+function inferJournalTypeFromText({ userText }) {
+  const t = String(userText || '').toLowerCase();
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  if (/(итог)/.test(t) || /(итоги)/.test(t) || /(итог\s+дня)/.test(t)) return 'Итог дня';
+  if (/(хорош(ий|о)|плох(ой|о)|прекрасн(ый|о)|тяжел(ый|о))\s+д(е|ё)н(ь|я)/.test(t)) return 'Итог дня';
+  if (/(как\s+прош(е|ё)л\s+д(е|ё)н(ь|я)|д(е|ё)н(ь|я)\s+перед)/.test(t)) return 'Итог дня';
+  if (/(рефлекс)/.test(t)) return 'Рефлексия';
+  if (/(событ)/.test(t)) return 'Событие';
+  if (/(идея)/.test(t)) return 'Идея';
+  return 'Мысль';
+}
+
+function inferJournalTopicsFromText({ userText }) {
+  const t = String(userText || '').toLowerCase();
+  const out = [];
+  const push = (v) => {
+    const s = String(v || '').trim();
+    if (!s) return;
+    if (!out.includes(s)) out.push(s);
+  };
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  if (/(нов(ый|ого)\s+год|рождеств|праздник)/.test(t)) push('Праздники');
+  if (/(д(е|ё)н(ь|я)|сегодня|вчера|завтра|итог)/.test(t)) push('Итоги дня');
+  if (/(работ)/.test(t) || /(проект)/.test(t) || /(заказ)/.test(t)) push('Работа');
+  if (/(семь)/.test(t) || /(дет)/.test(t) || /(родител)/.test(t)) push('Семья');
+  if (/(встреч)/.test(t) || /(созвон)/.test(t)) push('Встречи');
+  if (/(здоров)/.test(t) || /(сон)/.test(t) || /(трен)/.test(t)) push('Здоровье');
+  if (/(отношен)/.test(t)) push('Отношения');
+  if (/(контент)/.test(t) || /(пост)/.test(t) || /(соцсет)/.test(t)) push('Контент');
+  if (/(деньг)/.test(t) || /(финанс)/.test(t)) push('Финансы');
+  if (/(дорог|поездк|путеше)/.test(t)) push('Дорога');
+  if (!out.length) push('Итоги дня');
+  return out.slice(0, 3);
+}
+
+function inferJournalContextFromText({ userText }) {
+  const t = String(userText || '').toLowerCase();
+  const out = [];
+  const push = (v) => {
+    const s = String(v || '').trim();
+    if (!s) return;
+    if (!out.includes(s)) out.push(s);
+  };
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  if (/(дом)/.test(t)) push('дом');
+  if (/(офис)/.test(t)) push('офис');
+  if (/(дорог)/.test(t) || /(путь)/.test(t)) push('дорога');
+  if (/(встреч)/.test(t) || /(созвон)/.test(t)) push('встречи');
+  if (/(один)/.test(t)) push('один');
+  if (/(семь)/.test(t)) push('семья');
+  if (!out.length) push('не указано');
+  return out.slice(0, 2);
+}
+
+function normalizeTitleKeyLocal(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[^\p{L}\p{N} ]+/gu, '')
+    .trim();
+}
+
+function looksLikeTaskTagsList(value, taskTags) {
+  const tags = Array.isArray(taskTags) ? taskTags.filter(Boolean) : [];
+  if (!tags.length) return false;
+  const set = new Set(tags.map((x) => normalizeOptionKey(x)));
+  const arr = Array.isArray(value) ? value : [value];
+  const cleaned = arr.map((x) => String(x || '').trim()).filter(Boolean);
+  if (cleaned.length < 3) return false;
+  const matches = cleaned.filter((x) => set.has(normalizeOptionKey(x))).length;
+  return matches / cleaned.length >= 0.6;
+}
+
+function inferMoodEnergyFromText({ userText }) {
+  const t = String(userText || '').toLowerCase();
+  let mood = 3;
+  let energy = 3;
+
+  // Mood (positive/negative)
+  // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  if (/(супер|класс|отличн|рад|счастлив|доволен|хорош(о|ий)|круто|кайф)/.test(t)) mood = 4;
+  if (/(очень\s+рад|восторг|счастье|безумно\s+рад)/.test(t)) mood = 5;
+  if (/(плох(о|ой)|грустн|тоск|печал|злюсь|раздраж|тревож|страшн|депресс)/.test(t)) mood = 2;
+  if (/(ужасн|пиздец|крайне\s+плохо|паник)/.test(t)) mood = 1;
+
+  // Energy (high/low)
+  if (/(энерг|бодр|заряжен|полон\s+сил|высокая\s+энерг)/.test(t)) energy = 4;
+  if (/(очень\s+энерг|максимум\s+энерг|на\s+подъеме)/.test(t)) energy = 5;
+  if (/(устал|выгор|нет\s+сил|сонн|низк(ая|ой)\s+энерг|разбит)/.test(t)) energy = 2;
+  if (/(совсем\s+нет\s+сил|еле\s+жив|очень\s+устал)/.test(t)) energy = 1;
+
+  return { mood: clampRating1to5(mood), energy: clampRating1to5(energy) };
+}
+
+function isJournalRelatedText(text) {
+  const t = String(text || '').toLowerCase();
+  // Do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+  if (/(дневник|journal)/.test(t)) return true;
+  // Follow-up: if we recently showed journal entries and the user refers to "запись", treat as journal context.
+  if (/запис(ь|и|ю|ей|ям|ях)/.test(t)) return true;
+  return false;
+}
+
+function isJournalListIntent(text) {
+  const t = String(text || '').toLowerCase();
+  return /(покажи|список|выведи|лист|list)/.test(t) && /(дневник|journal|запис(ь|и))/i.test(t);
+}
+
+function isJournalArchiveIntent(text) {
+  const t = String(text || '').toLowerCase();
+  return /(удали|удалить|архив|archive)/.test(t) && /(дневник|journal|запис(ь|и))/i.test(t);
+}
+
+function isJournalCreateIntent(text) {
+  const t = String(text || '').toLowerCase();
+  return /(добав|созда|нов(ую|ая)|запиш(и|у)|сделай\s+запись)/.test(t) && /(дневник|journal|запис(ь|и))/i.test(t);
+}
+
+function isJournalUpdateIntent(text) {
+  const t = String(text || '').toLowerCase();
+  // Include voice-style confirmations like "дополню", and do not rely on word boundaries for Cyrillic.
+  const hasUpdate = /(обнов|заполн|перезаполн|простав|допол(ни|ню|нить)|исправ|категор)/.test(t);
+  const hasCreate = /(добав|созда|нов(ую|ая)|запиш(и|у)|сделай\s+запись)/.test(t);
+  return hasUpdate && !hasCreate && /(дневник|journal|запис(ь|и))/i.test(t);
+}
+
+function isEmptyPatchObject(patch) {
+  const p = patch && typeof patch === 'object' ? patch : {};
+  return !Object.values(p).some((v) => v !== undefined);
+}
+
 function normalizeSocialPlatform({ platform, platforms }) {
   if (platform === null || platform === undefined) return { ok: true, value: platform, unknown: [] };
   const { value, unknown } = normalizeMultiOptionValue({ value: platform, options: platforms, aliases: SOCIAL_PLATFORM_ALIASES });
@@ -467,7 +638,7 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
-async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, databaseIds, pgPool = null, botMode = 'tests' }) {
+async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalRepo, databaseIds, pgPool = null, botMode = 'tests' }) {
   debugLog('bot_init', { databaseIds });
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
@@ -498,9 +669,55 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
   const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
   const pendingToolActionByChatId = new Map(); // chatId -> { id, kind, payload, createdAt }
   const lastShownListByChatId = new Map(); // chatId -> [{ index, id, title }]
+  const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }]
   const tz = process.env.TG_TZ || 'Europe/Moscow';
   const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1-mini';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
+
+  async function renderAndRememberJournalList({ chatId, entries, title }) {
+    const shown = (entries || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+    lastShownJournalListByChatId.set(chatId, shown);
+
+    const lines = [title, ''];
+    if (!shown.length) {
+      lines.push('(пусто)');
+      bot.sendMessage(chatId, lines.join('\n'));
+      return;
+    }
+
+    for (const it of (entries || []).slice(0, 20)) {
+      if (!it || !it.title) continue;
+      const date = it.date ? `${it.date} ` : '';
+      const typeSuffix = it.type ? ` [${it.type}]` : '';
+      const rating = [];
+      if (typeof it.mood === 'number') rating.push(`M:${it.mood}`);
+      if (typeof it.energy === 'number') rating.push(`E:${it.energy}`);
+      const ratingSuffix = rating.length ? ` (${rating.join(' ')})` : '';
+      lines.push(`- ${date}${it.title}${typeSuffix}${ratingSuffix}`);
+    }
+    bot.sendMessage(chatId, lines.join('\n'));
+  }
+
+  function resolveJournalPageIdFromLastShown({ chatId, text }) {
+    const shown = lastShownJournalListByChatId.get(chatId) || [];
+    if (!shown.length) return null;
+
+    // If only one item shown recently, treat any follow-up as referring to it.
+    if (shown.length === 1) return shown[0].id;
+
+    const t = String(text || '').toLowerCase();
+    // Important: do not rely on \b for Cyrillic, it is not Unicode-aware in JS regex.
+    const wantsMostRecent = /(эта|этой|к\s+ней|у\s+не(е|ё)|единствен|одна|последн)/.test(t);
+    if (wantsMostRecent) return shown[0].id;
+
+    const key = normalizeTitleKeyLocal(text);
+    if (!key) return null;
+    for (const it of shown) {
+      const titleKey = normalizeTitleKeyLocal(it.title);
+      if (titleKey && key.includes(titleKey)) return it.id;
+    }
+    return null;
+  }
 
   function normalizePriorityForDb(priority) {
     if (!priority) return null;
@@ -528,6 +745,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     const rawTag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
     const tag = normalizeCategoryInput(rawTag) || defaultFallbackCategory();
     const priority = normalizePriorityForDb(task.priority ?? null);
+    const dueDate = normalizeDueDateInputLocal({ dueDate: task.dueDate ?? null, tz });
 
     try {
       debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
@@ -535,7 +753,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
         title: task.title,
         tag,
         priority,
-        dueDate: task.dueDate ?? null,
+        dueDate,
         status: 'Idle',
       });
       debugLog('notion_result', { op: 'createTask', ok: true });
@@ -583,512 +801,19 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     bot.sendMessage(chatId, lines.join('\n'));
   }
 
-  async function executeToolPlan({ chatId, from, toolName, args, userText }) {
-    try {
-      debugLog('tool_call', { tool: toolName, chatId, from });
-
-      if (toolName === 'notion.list_tasks') {
-        const hinted = inferListHintsFromText(userText);
-        const preset = args?.preset ? String(args.preset).trim().toLowerCase() : hinted.preset;
-        const tag =
-          args?.tag
-            ? normalizeCategoryInput(args.tag)
-            : hinted.tag
-              ? normalizeCategoryInput(hinted.tag)
-              : null;
-        const status = args?.status ? String(args.status) : null;
-        const includeDoneArg = typeof args?.includeDone === 'boolean' ? args.includeDone : null;
-        const doneOnlyArg = typeof args?.doneOnly === 'boolean' ? args.doneOnly : null;
-        const doneMode =
-          doneOnlyArg === true
-            ? 'only'
-            : includeDoneArg === true
-              ? 'include'
-              : status && String(status).trim().toLowerCase() === 'done'
-                ? 'only'
-                : hinted.doneMode || 'exclude';
-        let dueDate = args?.dueDate ? String(args.dueDate).trim() : null;
-        const queryText = args?.queryText ? String(args.queryText) : null;
-
-        if (dueDate && (dueDate.toLowerCase() === 'today' || dueDate.toLowerCase() === 'сегодня')) {
-          dueDate = yyyyMmDdInTz({ tz });
-        }
-
-        let tasks = [];
-        if (preset === 'today') {
-          const today = yyyyMmDdInTz({ tz });
-          const queryStatus = doneMode === 'only' ? 'Done' : null;
-          const byDate = await tasksRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
-          const inbox = await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
-          const seen = new Set();
-          for (const x of [...byDate, ...inbox]) {
-            if (!x || !x.id) continue;
-            if (seen.has(x.id)) continue;
-            seen.add(x.id);
-            tasks.push(x);
-          }
-        } else {
-          const queryStatus = status || (doneMode === 'only' ? 'Done' : null);
-          tasks = await tasksRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
-        }
-
-        let filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
-
-        if (doneMode === 'exclude') {
-          filtered = filtered.filter((t) => String(t.status || '').trim().toLowerCase() !== 'done');
-        } else if (doneMode === 'only') {
-          filtered = filtered.filter((t) => String(t.status || '').trim().toLowerCase() === 'done');
-        } else {
-          // include -> do nothing
-        }
-
-        const title = doneMode === 'only' ? 'Твои выполненные задачи:' : 'Твои задачи:';
-        await renderAndRememberList({ chatId, tasks: filtered, title });
-        return;
-      }
-
-      if (toolName === 'notion.find_tasks') {
-        const queryText = String(args?.queryText || '').trim();
-        const { tasks } = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 20 });
-        const filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
-        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":` });
-        return;
-      }
-
-      if (toolName === 'notion.create_task') {
-        const title = String(args?.title || '').trim();
-        const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
-        const priority = args?.priority ? String(args.priority) : null;
-        const dueDate = args?.dueDate ? String(args.dueDate) : null;
-        const status = args?.status ? String(args.status) : 'Idle';
-        const description = args?.description ? String(args.description) : null;
-
-        // Dedup check: if a similar active task exists, ask before creating a duplicate.
-        const key = normalizeTitleKey(title);
-        const candidates = (await tasksRepo.findTasks({ queryText: title, limit: 10 })).filter((t) => !t.tags.includes('Deprecated'));
-        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
-        if (dupe) {
-          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_task:${key}`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'notion.create_task',
-            payload: { title, tag, priority, dueDate, status, description },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, `Похоже, такая задача уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
-          return;
-        }
-
-        const created = await tasksRepo.createTask({ title, tag, priority, dueDate, status });
-        if (description) await tasksRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
-        return;
-      }
-
-      if (toolName === 'notion.list_ideas') {
-        const queryText = args?.queryText ? String(args.queryText) : null;
-        const status = args?.status ? String(args.status) : null;
-        const category = args?.category ? args.category : null;
-        const limit = args?.limit ? Number(args.limit) : 15;
-        const ideas = await ideasRepo.listIdeas({ category, status, queryText, limit });
-        const lines = ['Идеи:', ''];
-        for (const it of ideas.slice(0, 20)) {
-          lines.push(`- ${it.title}`);
-        }
-        bot.sendMessage(chatId, lines.join('\n'));
-        return;
-      }
-
-      if (toolName === 'notion.create_idea') {
-        const title = String(args?.title || '').trim();
-        const status = args?.status ? String(args.status) : 'Inbox';
-        const priority = args?.priority ? String(args.priority) : null;
-        let category = args?.category ?? null; // string|array|null
-        const source = args?.source ? String(args.source) : undefined;
-        const description = args?.description ? String(args.description) : null;
-
-        // Prevent creating new Category options: match only against existing Notion options.
-        const { category: categoryOptions } = await ideasRepo.getOptions();
-        if (category !== null && category !== undefined) {
-          const norm = normalizeMultiOptionValue({ value: category, options: categoryOptions, aliases: null });
-          if (norm.unknown.length) {
-            // If we cannot match, prefer leaving empty rather than creating a new option.
-            const concept = (categoryOptions || []).find((c) => String(c).trim().toLowerCase() === 'concept') || null;
-            category = concept ? concept : null;
-          } else {
-            category = Array.isArray(category) ? norm.value : norm.value[0] || null;
-          }
-        } else if (category === null) {
-          // If category not provided, default to Concept if present (generic bucket).
-          const concept = (categoryOptions || []).find((c) => String(c).trim().toLowerCase() === 'concept') || null;
-          if (concept) category = concept;
-        }
-
-        const key = normalizeTitleKey(title);
-        const candidates = await ideasRepo.listIdeas({ queryText: title, limit: 10 });
-        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
-        if (dupe) {
-          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_idea:${key}`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'notion.create_idea',
-            payload: { title, status, priority, category, source, description },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, `Похоже, такая идея уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
-          return;
-        }
-
-        const created = await ideasRepo.createIdea({ title, status, priority, category, source });
-        if (description) await ideasRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
-        return;
-      }
-
-      if (toolName === 'notion.update_idea') {
-        const { category: categoryOptions } = await ideasRepo.getOptions();
-        let normCategory = args?.category !== undefined ? args.category : undefined;
-        if (normCategory !== undefined && normCategory !== null) {
-          const norm = normalizeMultiOptionValue({ value: normCategory, options: categoryOptions, aliases: null });
-          if (norm.unknown.length) {
-            // Unknown category: do not change existing value (avoid clearing by mistake).
-            normCategory = undefined;
-          } else {
-            normCategory = Array.isArray(normCategory) ? norm.value : norm.value[0] || null;
-          }
-        }
-
-        const patch = {
-          title: args?.title ? String(args.title) : undefined,
-          status: args?.status ? String(args.status) : undefined,
-          priority: args?.priority ? String(args.priority) : undefined,
-          category: normCategory,
-          source: args?.source !== undefined ? String(args.source) : undefined,
-        };
-        // resolve pageId via shared logic below
-        args = { ...args, _patch: patch };
-        toolName = 'notion.update_idea_resolve';
-      }
-
-      if (toolName === 'notion.archive_idea') {
-        toolName = 'notion.archive_idea_resolve';
-      }
-
-      if (toolName === 'notion.list_social_posts') {
-        const queryText = args?.queryText ? String(args.queryText) : null;
-        const rawStatus = args?.status ? String(args.status) : null;
-        const rawPlatform = args?.platform ?? null;
-        const limit = args?.limit ? Number(args.limit) : 15;
-
-        const { platform: platforms, status: statuses } = await socialRepo.getOptions();
-        const status = normalizeSocialStatus({ status: rawStatus, statuses }).value;
-        const normPlatform = normalizeSocialPlatform({ platform: rawPlatform, platforms });
-        if (!normPlatform.ok) {
-          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform_list`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'social.pick_platform_list',
-            payload: { draft: { queryText, status, limit }, platforms },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, 'Выбери платформу для списка:', buildPickPlatformKeyboard({ actionId, platforms }));
-          return;
-        }
-
-        const posts = await socialRepo.listPosts({ platform: normPlatform.value, status, queryText, limit });
-        const lines = ['Посты (Social Media Planner):', ''];
-        for (const it of posts.slice(0, 20)) {
-          const plats = it.platform?.length ? ` [${it.platform.join(', ')}]` : '';
-          lines.push(`- ${it.title}${plats}`);
-        }
-        bot.sendMessage(chatId, lines.join('\n'));
-        return;
-      }
-
-      if (toolName === 'notion.create_social_post') {
-        const title = String(args?.title || '').trim();
-        const platform = args?.platform ?? null; // string|array|null
-        const postDate = args?.postDate ? String(args.postDate) : null;
-        const contentType = args?.contentType ?? null;
-        const status = args?.status ? String(args.status) : 'Post Idea';
-        const postUrl = args?.postUrl ? String(args.postUrl) : null;
-        const description = args?.description ? String(args.description) : null;
-
-        const { platform: platforms, status: statuses, contentType: contentTypes } = await socialRepo.getOptions();
-        const normalizedStatus = normalizeSocialStatus({ status, statuses }).value || 'Post Idea';
-        const normalizedContentType = normalizeSocialContentType({ contentType, contentTypes }).value;
-        const inferredDate = !postDate ? inferDateFromText({ userText, tz }) : null;
-        const effectivePostDate = postDate || inferredDate;
-
-        if (!platform || (Array.isArray(platform) && !platform.length)) {
-          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'social.pick_platform',
-            payload: {
-              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
-              platforms,
-            },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, 'Выбери платформу для поста:', buildPickPlatformKeyboard({ actionId, platforms }));
-          return;
-        }
-
-        const normPlatform = normalizeSocialPlatform({ platform, platforms });
-        if (!normPlatform.ok) {
-          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'social.pick_platform',
-            payload: {
-              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
-              platforms,
-            },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, 'Не понял платформу. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
-          return;
-        }
-
-        const key = normalizeTitleKey(title);
-        const candidates = await socialRepo.listPosts({ queryText: title, limit: 10 });
-        const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
-        if (dupe) {
-          const actionId = makeId(`${chatId}:${Date.now()}:notion.create_social_post:${key}`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'notion.create_social_post',
-            payload: {
-              title,
-              platform: normPlatform.value,
-              postDate: effectivePostDate,
-              contentType: normalizedContentType,
-              status: normalizedStatus,
-              postUrl,
-              description,
-            },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, `Похоже, такой пост уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
-          return;
-        }
-
-        const created = await socialRepo.createPost({
-          title,
-          platform: normPlatform.value,
-          postDate: effectivePostDate,
-          contentType: normalizedContentType,
-          status: normalizedStatus,
-          postUrl,
-        });
-        if (description) await socialRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
-        return;
-      }
-
-      if (toolName === 'notion.update_social_post') {
-        const { platform: platforms, status: statuses, contentType: contentTypes } = await socialRepo.getOptions();
-
-        // If user/LLM provided a platform that does not match Notion options, ask to pick it.
-        if (args?.platform !== undefined && args.platform !== null) {
-          const normPlatform = normalizeSocialPlatform({ platform: args.platform, platforms });
-          if (!normPlatform.ok) {
-            const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform_update`);
-            pendingToolActionByChatId.set(chatId, {
-              id: actionId,
-              kind: 'social.pick_platform_update',
-              payload: { draft: { ...args }, platforms },
-              createdAt: Date.now(),
-            });
-            bot.sendMessage(chatId, 'Не понял платформу для обновления. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
-            return;
-          }
-          args = { ...args, platform: normPlatform.value };
-        }
-
-        const patch = {
-          title: args?.title ? String(args.title) : undefined,
-          status: args?.status ? normalizeSocialStatus({ status: String(args.status), statuses }).value : undefined,
-          platform: args?.platform !== undefined ? args.platform : undefined,
-          postDate: args?.postDate !== undefined ? String(args.postDate) : undefined,
-          contentType: args?.contentType !== undefined ? normalizeSocialContentType({ contentType: args.contentType, contentTypes }).value : undefined,
-          postUrl: args?.postUrl !== undefined ? String(args.postUrl) : undefined,
-        };
-        args = { ...args, _patch: patch };
-        toolName = 'notion.update_social_post_resolve';
-      }
-
-      if (toolName === 'notion.archive_social_post') {
-        toolName = 'notion.archive_social_post_resolve';
-      }
-
-      // Domain-specific resolution (ideas/social) before falling back to tasks resolution.
-      if (toolName === 'notion.update_idea_resolve' || toolName === 'notion.archive_idea_resolve') {
-        const pageId = args?.pageId ? String(args.pageId) : null;
-        if (pageId) {
-          const actionId = makeId(`${chatId}:${Date.now()}:${toolName}:${pageId}`);
-          if (toolName === 'notion.update_idea_resolve') {
-            pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId, patch: args._patch }, createdAt: Date.now() });
-            bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
-            return;
-          }
-          pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_idea', payload: { pageId }, createdAt: Date.now() });
-          bot.sendMessage(chatId, 'Архивировать эту идею?', buildToolConfirmKeyboard({ actionId }));
-          return;
-        }
-
-        const queryText = String(args?.queryText || '').trim();
-        const candidates = (await ideasRepo.listIdeas({ queryText, limit: 10 })) || [];
-        if (candidates.length === 1) {
-          args = { ...args, pageId: candidates[0].id };
-          return await executeToolPlan({ chatId, from, toolName, args, userText });
-        }
-        if (candidates.length > 1) {
-          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
-          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName === 'notion.update_idea_resolve' ? 'notion.update_idea' : 'notion.archive_idea', payload: { _candidates: items, patch: args._patch }, createdAt: Date.now() });
-          bot.sendMessage(chatId, 'Нашел несколько идей. Выбери:', buildPickTaskKeyboard({ items }));
-          return;
-        }
-        bot.sendMessage(chatId, 'Не нашел идею. Уточни запрос.');
-        return;
-      }
-
-      if (toolName === 'notion.update_social_post_resolve' || toolName === 'notion.archive_social_post_resolve') {
-        const pageId = args?.pageId ? String(args.pageId) : null;
-        if (pageId) {
-          const actionId = makeId(`${chatId}:${Date.now()}:${toolName}:${pageId}`);
-          if (toolName === 'notion.update_social_post_resolve') {
-            pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_social_post', payload: { pageId, patch: args._patch }, createdAt: Date.now() });
-            bot.sendMessage(chatId, 'Применить изменения к посту?', buildToolConfirmKeyboard({ actionId }));
-            return;
-          }
-          pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_social_post', payload: { pageId }, createdAt: Date.now() });
-          bot.sendMessage(chatId, 'Архивировать этот пост?', buildToolConfirmKeyboard({ actionId }));
-          return;
-        }
-
-        const queryText = String(args?.queryText || '').trim();
-        const candidates = (await socialRepo.listPosts({ queryText, limit: 10 })) || [];
-        if (candidates.length === 1) {
-          args = { ...args, pageId: candidates[0].id };
-          return await executeToolPlan({ chatId, from, toolName, args, userText });
-        }
-        if (candidates.length > 1) {
-          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
-          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName === 'notion.update_social_post_resolve' ? 'notion.update_social_post' : 'notion.archive_social_post', payload: { _candidates: items, patch: args._patch }, createdAt: Date.now() });
-          bot.sendMessage(chatId, 'Нашел несколько постов. Выбери:', buildPickTaskKeyboard({ items }));
-          return;
-        }
-        bot.sendMessage(chatId, 'Не нашел пост. Уточни запрос.');
-        return;
-      }
-
-      // Tasks resolution: use either taskIndex (from last list) or pageId.
-      const pageId = args?.pageId ? String(args.pageId) : null;
-      const taskIndex = args?.taskIndex ? Number(args.taskIndex) : null;
-      let resolvedPageId = pageId;
-
-      if (!resolvedPageId && taskIndex && lastShownListByChatId.has(chatId)) {
-        const found = (lastShownListByChatId.get(chatId) || []).find((x) => x.index === taskIndex);
-        if (found) resolvedPageId = found.id;
-      }
-
-      if (!resolvedPageId && args?.queryText) {
-        const queryText = String(args.queryText).trim();
-        const fuzzy = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 10 });
-        const candidates = (fuzzy.tasks || []).filter((t) => !t.tags.includes('Deprecated'));
-        if (candidates.length === 1) resolvedPageId = candidates[0].id;
-        if (candidates.length > 1) {
-          const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
-          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName, payload: { ...args, _candidates: items }, createdAt: Date.now() });
-          bot.sendMessage(chatId, 'Нашел несколько задач. Выбери:', buildPickTaskKeyboard({ items }));
-          return;
-        }
-      }
-
-      if (!resolvedPageId) {
-        bot.sendMessage(chatId, 'Не понял, к какой задаче применить действие. Напиши номер из списка или уточни название.');
-        return;
-      }
-
-      if (toolName === 'notion.mark_done') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.mark_done:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.mark_done', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Пометить задачу как выполненную?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.move_to_deprecated') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.move_to_deprecated:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.move_to_deprecated', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Перенести задачу в Deprecated?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.update_task') {
-        const patch = {
-          title: args?.title ? String(args.title) : undefined,
-          tag: args?.tag ? normalizeCategoryInput(args.tag) : undefined,
-          priority: args?.priority ? String(args.priority) : undefined,
-          dueDate: args?.dueDate ? String(args.dueDate) : undefined,
-          status: args?.status ? String(args.status) : undefined,
-        };
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_task:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_task', payload: { pageId: resolvedPageId, patch }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Применить изменения к задаче?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.append_description') {
-        const text = String(args?.text || '').trim();
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.append_description:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.append_description', payload: { pageId: resolvedPageId, text }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Добавить это в описание задачи?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.update_idea_resolve') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_idea:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId: resolvedPageId, patch: args._patch }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.archive_idea_resolve') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.archive_idea:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_idea', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Архивировать эту идею?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.update_social_post_resolve') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.update_social_post:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_social_post', payload: { pageId: resolvedPageId, patch: args._patch }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Применить изменения к посту?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      if (toolName === 'notion.archive_social_post_resolve') {
-        const actionId = makeId(`${chatId}:${Date.now()}:notion.archive_social_post:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.archive_social_post', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Архивировать этот пост?', buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      bot.sendMessage(chatId, 'Неизвестная операция.');
-    } catch (e) {
-      const err = extractNotionErrorInfo(e);
-      debugLog('tool_error', { tool: toolName, message: err.message, code: err.code, status: err.status, requestId: err.requestId });
-
-      const debug = String(process.env.TG_DEBUG || '') === '1';
-      if (debug) {
-        bot.sendMessage(chatId, `Ошибка Notion: ${truncate(err.short, 800)}`);
-      } else {
-        bot.sendMessage(chatId, 'Ошибка при выполнении операции с Notion.');
-      }
-    }
-  }
+  const { executeToolPlan } = createToolExecutor({
+    bot,
+    tasksRepo,
+    ideasRepo,
+    socialRepo,
+    journalRepo,
+    tz,
+    pendingToolActionByChatId,
+    lastShownListByChatId,
+    renderAndRememberList,
+    renderAndRememberJournalList,
+    resolveJournalPageIdFromLastShown,
+  });
 
   function clearTimer(chatId) {
     const t = timers.get(chatId);
@@ -1096,13 +821,14 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     timers.delete(chatId);
   }
 
-  bot.onText(/\/start/, (msg) => {
+  const handleStart = (msg) => {
     const chatId = msg.chat.id;
-    debugLog('incoming_command', { chatId, command: '/start', from: msg.from?.username || null });
+    const cmd = String(msg.text || '').trim();
+    debugLog('incoming_command', { chatId, command: cmd || '/start', from: msg.from?.username || null });
     const opts = {
       reply_markup: {
         keyboard: [
-          [{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: '/struct' }],
+          [{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: 'Start' }],
           [{ text: '/reminders_on' }, { text: '/reminders_off' }],
         ],
         resize_keyboard: true,
@@ -1118,7 +844,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
         .then(() => debugLog('reminders_subscribed', { chatId, enabled: true }))
         .catch((e) => debugLog('reminders_subscribe_error', { chatId, message: String(e?.message || e) }));
     }
-  });
+  };
+
+  bot.onText(/\/start/, handleStart);
+  bot.onText(/^Start$/i, handleStart);
 
   bot.onText(/\/reminders_on/, async (msg) => {
     const chatId = msg.chat.id;
@@ -1279,138 +1008,21 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     // Ignore commands here (handled by onText handlers).
     if (msg.text && msg.text.startsWith('/')) return;
 
-    // Voice pipeline (minimal v1):
-    // 1) download OGG/OPUS by file_id
-    // 2) ffmpeg -> wav 16k mono
-    // 3) Whisper STT
-    // 4) feed transcript into existing AI flow (task/question)
+    // Voice pipeline (minimal v1): download -> ffmpeg -> STT -> planner/tools.
     if (msg.voice && msg.voice.file_id) {
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) {
-        bot.sendMessage(chatId, 'Voice получен, но OPENAI_API_KEY не найден. Проверь .env.');
-        return;
-      }
-
-      const sttModel = process.env.TG_STT_MODEL || 'whisper-1';
-      const lang = process.env.TG_STT_LANGUAGE || 'ru';
-
-      debugLog('voice_received', {
+      await handleVoiceMessage({
+        bot,
+        msg,
         chatId,
         from,
-        duration: msg.voice.duration || null,
-        file_unique_id: msg.voice.file_unique_id || null,
+        aiModel,
+        tz,
+        notionCategories,
+        lastShownListByChatId,
+        executeToolPlan,
+        aiDraftByChatId,
+        aiDraftById,
       });
-
-      const statusMsg = await bot.sendMessage(chatId, 'Voice: скачиваю...');
-      const statusMessageId = statusMsg?.message_id;
-
-      let oggPath = null;
-      let wavPath = null;
-
-      try {
-        const dl = await downloadTelegramFileToTmp({ bot, fileId: msg.voice.file_id, prefix: 'tg_voice', ext: 'ogg' });
-        oggPath = dl.outPath;
-        debugLog('voice_downloaded', { chatId, bytes: fs.statSync(oggPath).size });
-
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: конвертирую (ffmpeg)...' });
-        const conv = await convertOggToWav16kMono({ inputPath: oggPath });
-        wavPath = conv.wavPath;
-
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: распознаю (STT)...' });
-        const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang });
-        const transcript = stt.text;
-
-        debugLog('voice_transcribed', { chatId, text_len: transcript.length, text_preview: transcript.slice(0, 80) });
-
-        if (!transcript) {
-          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: не удалось распознать текст.' });
-          return;
-        }
-
-        const transcriptPreview = oneLinePreview(transcript, 90);
-
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: формирую задачу...' });
-
-        // Voice transcript should go through the same planner->tools path as text messages.
-        const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
-        const lastShown = lastShownListByChatId.get(chatId) || [];
-        try {
-          const plan = await planAgentAction({
-            apiKey,
-            model: aiModel,
-            userText: transcript,
-            allowedCategories,
-            lastShownList: lastShown,
-          });
-
-          if (plan.type === 'chat') {
-            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
-            bot.sendMessage(chatId, plan.chat.message);
-            return;
-          }
-
-          if (plan.type === 'tool') {
-            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: выполняю...' });
-            await executeToolPlan({ chatId, from, toolName: plan.tool.name, args: plan.tool.args, userText: transcript });
-            if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
-            return;
-          }
-        } catch (e) {
-          debugLog('planner_error', { source: 'voice', message: String(e?.message || e) });
-          // Fall back to legacy AI intent analyzer and draft confirmation flow.
-        }
-
-        // Fallback: legacy task/question -> draft confirmation (kept for robustness).
-        const existingDraft = aiDraftByChatId.get(chatId) || null;
-        const priorTaskDraft = existingDraft?.task || null;
-
-        const { normalized } = await aiAnalyzeMessage({
-          apiKey,
-          model: aiModel,
-          tz,
-          nowIso: new Date().toISOString(),
-          userText: transcript,
-          priorTaskDraft,
-          allowedCategories,
-        });
-
-        debugLog('ai_result', { type: normalized.type, source: 'voice_fallback' });
-
-        if (normalized.type === 'question') {
-          if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
-          bot.sendMessage(chatId, normalized.question.answer);
-          return;
-        }
-
-        const draftId = existingDraft?.id || makeId(`${chatId}:${Date.now()}:${normalized.task.title}`);
-        const task = normalized.task;
-        const rawAiTag = Array.isArray(task.tags) && task.tags.length ? task.tags[0] : null;
-        const normalizedTag = normalizeCategoryInput(rawAiTag);
-
-        const allowedMap = new Map(allowedCategories.map((c) => [String(c).trim().toLowerCase(), c]));
-        const canonical = normalizedTag ? allowedMap.get(String(normalizedTag).trim().toLowerCase()) : null;
-        const finalTag = canonical || 'Inbox';
-        task.tags = [finalTag];
-
-        const draft = { id: draftId, task, updatedAt: Date.now(), awaitingConfirmation: true };
-        aiDraftByChatId.set(chatId, draft);
-        aiDraftById.set(draftId, { ...draft, chatId });
-
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: `Распознано: ${transcriptPreview}` });
-        const kb = buildAiConfirmKeyboard({ draftId });
-        bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
-      } catch (e) {
-        debugLog('voice_error', { chatId, message: String(e?.message || e) });
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: ошибка при обработке.' });
-        bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
-      } finally {
-        try {
-          if (oggPath) fs.unlinkSync(oggPath);
-        } catch {}
-        try {
-          if (wavPath) fs.unlinkSync(wavPath);
-        } catch {}
-      }
       return;
     }
 
@@ -1562,8 +1174,40 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
     try {
       const lastShown = lastShownListByChatId.get(chatId) || [];
-      const plan = await planAgentAction({ apiKey, model: aiModel, userText: text, allowedCategories, lastShownList: lastShown });
+      const plan = await planAgentAction({
+        apiKey,
+        model: aiModel,
+        userText: text,
+        allowedCategories,
+        lastShownList: lastShown,
+        tz,
+        nowIso: new Date().toISOString(),
+      });
       if (plan.type === 'chat') {
+        // Guard: for Journal-related intents, do not let the model ask the user to provide fields.
+        // Always route to tools and let deterministic code infer/fill missing fields.
+        if (isJournalRelatedText(text)) {
+          const toolName = isJournalListIntent(text)
+            ? 'notion.list_journal_entries'
+            : isJournalArchiveIntent(text)
+              ? 'notion.archive_journal_entry'
+              : isJournalCreateIntent(text)
+                ? 'notion.create_journal_entry'
+                : isJournalUpdateIntent(text)
+                  ? 'notion.update_journal_entry'
+                  : 'notion.create_journal_entry';
+
+          const args =
+            toolName === 'notion.create_journal_entry'
+              ? { title: oneLinePreview(text, 64) || 'Запись', description: text }
+              : toolName === 'notion.update_journal_entry'
+                ? { queryText: null, autofill: true }
+                : { queryText: null };
+
+          await executeToolPlan({ chatId, from, toolName, args, userText: text });
+          return;
+        }
+
         bot.sendMessage(chatId, plan.chat.message);
         return;
       }
@@ -1573,6 +1217,27 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
       }
     } catch (e) {
       debugLog('planner_error', { message: String(e?.message || e) });
+      if (isJournalRelatedText(text)) {
+        const toolName = isJournalListIntent(text)
+          ? 'notion.list_journal_entries'
+          : isJournalArchiveIntent(text)
+            ? 'notion.archive_journal_entry'
+            : isJournalCreateIntent(text)
+              ? 'notion.create_journal_entry'
+              : isJournalUpdateIntent(text)
+                ? 'notion.update_journal_entry'
+                : 'notion.create_journal_entry';
+
+        const args =
+          toolName === 'notion.create_journal_entry'
+            ? { title: oneLinePreview(text, 64) || 'Запись', description: text }
+            : toolName === 'notion.update_journal_entry'
+              ? { queryText: null, autofill: true }
+              : { queryText: null };
+
+        await executeToolPlan({ chatId, from, toolName, args, userText: text });
+        return;
+      }
       // Fall back to legacy AI intent parser below.
     }
 
@@ -1639,397 +1304,25 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, database
     }
   });
 
-  bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const action = query.data;
-    debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
-
-    if (action && action.startsWith('tool:')) {
-      const [, act, actionId] = action.split(':');
-      const pending = pendingToolActionByChatId.get(chatId) || null;
-
-      if (!pending || !pending.id || pending.id !== actionId) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Подтверждение устарело. Повтори команду.');
-        return;
-      }
-
-      if (act === 'cancel') {
-        pendingToolActionByChatId.delete(chatId);
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Ок, отменил.');
-        return;
-      }
-
-      if (act === 'confirm') {
-        const kind = pending.kind;
-        const payload = pending.payload;
-        pendingToolActionByChatId.delete(chatId);
-        bot.answerCallbackQuery(query.id);
-        try {
-          if (kind === 'notion.mark_done') {
-            await tasksRepo.markDone({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
-            return;
-          }
-          if (kind === 'notion.move_to_deprecated') {
-            await tasksRepo.moveToDeprecated({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
-            return;
-          }
-          if (kind === 'notion.update_task') {
-            await tasksRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
-            bot.sendMessage(chatId, 'Готово. Обновил задачу.');
-            return;
-          }
-          if (kind === 'notion.append_description') {
-            await tasksRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
-            bot.sendMessage(chatId, 'Готово. Добавил описание.');
-            return;
-          }
-          if (kind === 'notion.create_task') {
-            const created = await tasksRepo.createTask(payload);
-            if (payload.description) await tasksRepo.appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
-            return;
-          }
-          if (kind === 'notion.create_idea') {
-            const created = await ideasRepo.createIdea(payload);
-            if (payload.description) await ideasRepo.appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
-            return;
-          }
-          if (kind === 'notion.create_social_post') {
-            const created = await socialRepo.createPost(payload);
-            if (payload.description) await socialRepo.appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
-            return;
-          }
-          if (kind === 'notion.update_idea') {
-            await ideasRepo.updateIdea({ pageId: payload.pageId, ...payload.patch });
-            bot.sendMessage(chatId, 'Готово. Обновил идею.');
-            return;
-          }
-          if (kind === 'notion.archive_idea') {
-            await ideasRepo.archiveIdea({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Архивировал идею.');
-            return;
-          }
-          if (kind === 'notion.update_social_post') {
-            await socialRepo.updatePost({ pageId: payload.pageId, ...payload.patch });
-            bot.sendMessage(chatId, 'Готово. Обновил пост.');
-            return;
-          }
-          if (kind === 'notion.archive_social_post') {
-            await socialRepo.archivePost({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Архивировал пост.');
-            return;
-          }
-          bot.sendMessage(chatId, 'Неизвестная операция.');
-        } catch {
-          bot.sendMessage(chatId, 'Не получилось выполнить действие в Notion.');
-        }
-        return;
-      }
-
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action && action.startsWith('pick:')) {
-      const suffix = action.split(':')[1] || '';
-      if (suffix === 'cancel') {
-        pendingToolActionByChatId.delete(chatId);
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Ок, отменил.');
-        return;
-      }
-
-      const idx = Number(suffix);
-      const pending = pendingToolActionByChatId.get(chatId);
-      if (!pending || !Number.isFinite(idx)) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
-        return;
-      }
-
-      const items = pending.payload?._candidates || [];
-      const chosen = items.find((x) => x.index === idx);
-      if (!chosen) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Не нашел выбранный пункт. Попробуй еще раз.');
-        return;
-      }
-
-      // Replace pending action with resolved pageId and ask for confirmation.
-      const kind = pending.kind;
-      const actionId = makeId(`${chatId}:${Date.now()}:${kind}:${chosen.id}`);
-      pendingToolActionByChatId.set(chatId, { id: actionId, kind, payload: { ...pending.payload, pageId: chosen.id }, createdAt: Date.now() });
-
-      bot.answerCallbackQuery(query.id);
-
-      if (kind === 'notion.mark_done') {
-        bot.sendMessage(chatId, `Пометить выполнено: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.move_to_deprecated') {
-        bot.sendMessage(chatId, `Перенести в Deprecated: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.update_task') {
-        bot.sendMessage(chatId, `Обновить задачу: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.append_description') {
-        bot.sendMessage(chatId, `Добавить описание к: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.update_idea') {
-        bot.sendMessage(chatId, `Обновить идею: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.archive_idea') {
-        bot.sendMessage(chatId, `Архивировать идею: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.update_social_post') {
-        bot.sendMessage(chatId, `Обновить пост: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-      if (kind === 'notion.archive_social_post') {
-        bot.sendMessage(chatId, `Архивировать пост: "${chosen.title}"?`, buildToolConfirmKeyboard({ actionId }));
-        return;
-      }
-
-      bot.sendMessage(chatId, 'Ок. Подтверди действие.', buildToolConfirmKeyboard({ actionId }));
-      return;
-    }
-
-    if (action && action.startsWith('plat:')) {
-      const [, actionId, idxRaw] = action.split(':');
-      const idx = Number(idxRaw);
-      const pending = pendingToolActionByChatId.get(chatId) || null;
-      if (!pending || pending.id !== actionId || !String(pending.kind || '').startsWith('social.pick_platform')) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
-        return;
-      }
-      const platforms = pending.payload?.platforms || [];
-      if (!Number.isFinite(idx) || idx < 0 || idx >= platforms.length) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Не понял выбранную платформу.');
-        return;
-      }
-      const platformName = platforms[idx];
-      const draft = pending.payload?.draft || {};
-      const kind = pending.kind;
-      pendingToolActionByChatId.delete(chatId);
-      bot.answerCallbackQuery(query.id);
-
-      if (kind === 'social.pick_platform_list') {
-        await executeToolPlan({
-          chatId,
-          from: null,
-          toolName: 'notion.list_social_posts',
-          args: { ...draft, platform: platformName },
-          userText: `platform_selected:${platformName}`,
-        });
-        return;
-      }
-
-      if (kind === 'social.pick_platform_update') {
-        await executeToolPlan({
-          chatId,
-          from: null,
-          toolName: 'notion.update_social_post',
-          args: { ...draft, platform: platformName },
-          userText: `platform_selected:${platformName}`,
-        });
-        return;
-      }
-
-      // Default: create (will dedup and possibly ask to confirm).
-      await executeToolPlan({
-        chatId,
-        from: null,
-        toolName: 'notion.create_social_post',
-        args: { ...draft, platform: platformName },
-        userText: `platform_selected:${platformName}`,
-      });
-      return;
-    }
-
-    if (action && action.startsWith('ai:')) {
-      const [, act, draftId] = action.split(':');
-      if (act === 'cancel') {
-        cancelAiDraft({ chatId, draftId, queryId: query.id });
-        return;
-      }
-
-      if (act === 'confirm') {
-        await confirmAiDraft({ chatId, draftId, queryId: query.id });
-        return;
-      }
-
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action === 'ignore') {
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action.startsWith('cancel:')) {
-      clearTimer(chatId);
-      pendingTask.delete(chatId);
-      bot.sendMessage(chatId, 'Task addition cancelled.');
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action.startsWith('sc:')) {
-      const [, taskId, category] = action.split(':');
-      const fullTask = taskTextById.get(taskId);
-      const truncatedTask = truncate(fullTask, 20);
-      clearTimer(chatId);
-
-      const normalizedCategory = normalizeCategoryInput(category);
-      if (!normalizedCategory) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Эта категория недоступна.');
-        return;
-      }
-
-      if (DATE_CATEGORIES.includes(category)) {
-        waitingFor.date.add(chatId);
-        const kb = buildDateKeyboard({ taskId, category });
-        bot.sendMessage(chatId, `Please select a due date for task \"${truncatedTask}\":`, kb);
-        timers.set(
-          chatId,
-          setTimeout(async () => {
-            if (!waitingFor.date.has(chatId)) return;
-            waitingFor.date.delete(chatId);
-            try {
-              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
-              debugLog('notion_result', { op: 'createTask', ok: true });
-              bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" without due date.`);
-            } catch {
-              debugLog('notion_result', { op: 'createTask', ok: false });
-              bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-            } finally {
-              pendingTask.delete(chatId);
-              clearTimer(chatId);
-            }
-          }, 60_000)
-        );
-        bot.answerCallbackQuery(query.id);
-        return;
-      }
-
-      try {
-        debugLog('notion_call', { op: 'createTask', tag: normalizedCategory, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: normalizedCategory, status: 'Idle' });
-        debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${normalizedCategory}\".`);
-      } catch {
-        debugLog('notion_result', { op: 'createTask', ok: false });
-        bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-      } finally {
-        pendingTask.delete(chatId);
-        clearTimer(chatId);
-      }
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action.startsWith('priority:')) {
-      // priority:{taskId}:{category}:{pmd}:{priorityOption}
-      const [, taskId, category, pmdRaw, priorityOpt] = action.split(':');
-      const fullTask = taskTextById.get(taskId);
-      const truncatedTask = truncate(fullTask, 20);
-      waitingFor.priority.delete(chatId);
-      clearTimer(chatId);
-
-      const finalPriority = String(priorityOpt).toLowerCase() === 'skip' ? null : priorityOpt;
-
-      if (DATE_CATEGORIES.includes(category)) {
-        waitingFor.date.add(chatId);
-        const kb = buildDateKeyboard({ taskId, category, pmd: null, priority: finalPriority });
-        bot.sendMessage(chatId, `Please select a due date for task \"${truncatedTask}\":`, kb);
-
-        timers.set(
-          chatId,
-          setTimeout(async () => {
-            if (!waitingFor.date.has(chatId)) return;
-            waitingFor.date.delete(chatId);
-            try {
-              debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
-              debugLog('notion_result', { op: 'createTask', ok: true });
-              bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
-            } catch {
-              debugLog('notion_result', { op: 'createTask', ok: false });
-              bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-            } finally {
-              pendingTask.delete(chatId);
-              clearTimer(chatId);
-            }
-          }, 30_000)
-        );
-
-        bot.answerCallbackQuery(query.id);
-        return;
-      }
-
-      try {
-        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
-        debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
-      } catch {
-        debugLog('notion_result', { op: 'createTask', ok: false });
-        bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-      } finally {
-        pendingTask.delete(chatId);
-        clearTimer(chatId);
-      }
-
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    if (action.startsWith('date:')) {
-      // date:{taskId}:{category}:{pmd}:{priority}:{dateString}
-      const [, taskId, category, pmdRaw, prioRaw, dateString] = action.split(':');
-      const fullTask = taskTextById.get(taskId);
-      const truncatedTask = truncate(fullTask, 20);
-      waitingFor.date.delete(chatId);
-      clearTimer(chatId);
-
-      const priority = prioRaw === 'null' ? null : prioRaw;
-      const dueDate = String(dateString).toLowerCase() === 'skip' ? null : dateString;
-
-      try {
-        debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, priority, dueDate, status: 'Idle' });
-        debugLog('notion_result', { op: 'createTask', ok: true });
-        bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${priority || 'not set'}, Due Date: ${dueDate || 'not set'}.`);
-      } catch {
-        debugLog('notion_result', { op: 'createTask', ok: false });
-        bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
-      } finally {
-        pendingTask.delete(chatId);
-        clearTimer(chatId);
-      }
-
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-
-    bot.answerCallbackQuery(query.id);
+  const handleCallbackQuery = createCallbackQueryHandler({
+    bot,
+    tasksRepo,
+    ideasRepo,
+    socialRepo,
+    journalRepo,
+    pendingToolActionByChatId,
+    executeToolPlan,
+    confirmAiDraft,
+    cancelAiDraft,
+    clearTimer,
+    timers,
+    pendingTask,
+    taskTextById,
+    waitingFor,
+    DATE_CATEGORIES,
+    notionRepo,
   });
+  bot.on('callback_query', handleCallbackQuery);
 
   bot.on('polling_error', (error) => {
     // Do not crash on transient errors.

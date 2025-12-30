@@ -30,6 +30,8 @@ function buildSystemPrompt({ allowedCategories }) {
     '- If user asks to show/list tasks (e.g., "покажи", "список", "что у меня в Notion") you MUST use tool "notion.list_tasks".',
     '- When listing tasks, default behavior is to EXCLUDE completed (Done) tasks.',
     '- Show completed tasks ONLY if user explicitly asks (e.g., "выполненные/завершенные") or asks to include them (e.g., "все включая выполненные").',
+    '- If the user asks to create/update/fill a journal entry (RU: "дневник", "запись в дневник", "итог дня", "рефлексия") you MUST return a TOOL plan, not chat.',
+    '- For journal requests, do NOT ask the user to provide Type/Topics/Context/Mood/Energy. Infer them and proceed (use neutral defaults if unsure).',
     '',
     'Schema:',
     '{',
@@ -39,7 +41,8 @@ function buildSystemPrompt({ allowedCategories }) {
     '    "name":',
     '      "notion.list_tasks" | "notion.find_tasks" | "notion.mark_done" | "notion.move_to_deprecated" | "notion.update_task" | "notion.create_task" | "notion.append_description"',
     '      | "notion.list_ideas" | "notion.find_ideas" | "notion.create_idea" | "notion.update_idea" | "notion.archive_idea"',
-    '      | "notion.list_social_posts" | "notion.find_social_posts" | "notion.create_social_post" | "notion.update_social_post" | "notion.archive_social_post",',
+    '      | "notion.list_social_posts" | "notion.find_social_posts" | "notion.create_social_post" | "notion.update_social_post" | "notion.archive_social_post"',
+    '      | "notion.list_journal_entries" | "notion.find_journal_entries" | "notion.create_journal_entry" | "notion.update_journal_entry" | "notion.archive_journal_entry",',
     '    "args": object',
     '  } | null',
     '}',
@@ -49,6 +52,8 @@ function buildSystemPrompt({ allowedCategories }) {
     '- For categories, prefer args.tag with a value from Allowed categories.',
     '- Common RU synonyms: "домашние" -> tag "Home", "рабочие" -> tag "Work", "инбокс/входящие/today" -> tag "Inbox".',
     '- If user asks "задачи на сегодня" use args.preset="today" (this means dueDate = today PLUS Inbox).',
+    '- Relative dates like "сегодня/завтра/послезавтра" MUST be interpreted using the provided timezone and current time in the user message context.',
+    '- If the user specifies a time (e.g. "сегодня в 15:00"), set dueDate to a full ISO datetime string (YYYY-MM-DDTHH:mm:ss+HH:MM) in that timezone. Do NOT invent a different day.',
     '- If user asks for completed tasks: set args.status="Done" or args.doneOnly=true.',
     '- If user asks to include completed tasks: set args.includeDone=true.',
     '- If user refers to a task by a fuzzy name, use notion.find_tasks with queryText.',
@@ -65,6 +70,15 @@ function buildSystemPrompt({ allowedCategories }) {
     '  - Prefer passing platform/status/contentType as exact Notion option names when possible.',
     '  - If the user says platform in RU/EN ("фб/фейсбук/facebook", "тг/телеграм/telegram", etc.), infer the intended platform and pass it in args.platform.',
     '  - If platform is missing or you are unsure, ask a short clarifying question OR call create_social_post with platform=null - the bot will show a platform picker.',
+    '',
+    '- If user talks about a personal diary/journal (RU: "дневник", "запись в дневник", "итог дня", "рефлексия") use Journal tools.',
+    '  - list entries: notion.list_journal_entries (args: type?, topics?, context?, dateOnOrAfter?, dateBefore?, queryText?, limit?)',
+    '  - create entry: notion.create_journal_entry (args: title, date?, type?, topics?, mood?, energy?, context?, description?)',
+    '  - update entry: notion.update_journal_entry (args: pageId? OR queryText?, title?, date?, type?, topics?, mood?, energy?, context?, description?)',
+    '  - archive entry: notion.archive_journal_entry (args: pageId? OR queryText?)',
+    '  - For create_journal_entry you MUST always provide: type, topics, context, mood, energy.',
+    '  - Mood and Energy are numbers 1-5. If unsure, use neutral 3.',
+    '  - Type/Topics/Context should be reasonable and non-empty. Prefer matching existing Notion options, but if unsure choose generic defaults like "Мысль", "Общее", "Другое".',
   ].join('\n');
 }
 
@@ -85,10 +99,30 @@ function normalizePlan(obj) {
   return { type: 'tool', chat: null, tool: { name, args } };
 }
 
-async function planAgentAction({ apiKey, model = 'gpt-4.1-mini', userText, allowedCategories, lastShownList }) {
+async function planAgentAction({ apiKey, model = 'gpt-4.1-mini', userText, allowedCategories, lastShownList, tz, nowIso }) {
   const system = buildSystemPrompt({ allowedCategories });
 
+  const tzName = String(tz || 'UTC').trim() || 'UTC';
+  const nowDate = nowIso ? new Date(nowIso) : new Date();
+  const nowInTz = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tzName,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .format(nowDate)
+    .replace(',', '');
+
   const ctxLines = [];
+  ctxLines.push('Context:');
+  ctxLines.push(`- Timezone: ${tzName}`);
+  ctxLines.push(`- Now (UTC ISO): ${nowDate.toISOString()}`);
+  ctxLines.push(`- Now in timezone: ${nowInTz}`);
+  ctxLines.push('');
   if (Array.isArray(lastShownList) && lastShownList.length) {
     ctxLines.push('Last shown tasks list (index -> title):');
     for (const item of lastShownList.slice(0, 20)) {
