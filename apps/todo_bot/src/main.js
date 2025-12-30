@@ -9,6 +9,7 @@ const { NotionSocialRepo } = require('../../../core/connectors/notion/social_rep
 const { NotionJournalRepo } = require('../../../core/connectors/notion/journal_repo');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { registerTodoBot } = require('../../../core/dialogs/todo_bot');
+const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
 
 async function main() {
   hydrateProcessEnv();
@@ -66,9 +67,20 @@ async function main() {
   console.log(`TG-MultiAgent todo bot started. mode=${mode}`);
 }
 
+process.on('unhandledRejection', (reason) => {
+  // eslint-disable-next-line no-console
+  console.error('Unhandled rejection:', sanitizeErrorForLog(reason));
+});
+
+process.on('uncaughtException', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('Uncaught exception:', sanitizeErrorForLog(err));
+  process.exitCode = 1;
+});
+
 main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error('Fatal error:', err);
+  console.error('Fatal error:', sanitizeErrorForLog(err));
   process.exitCode = 1;
 });
 

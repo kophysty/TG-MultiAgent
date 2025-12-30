@@ -4,6 +4,7 @@ const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { RemindersRepo } = require('../../../core/connectors/postgres/reminders_repo');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
+const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
 
 function parseHhMm(text, fallbackH = 11, fallbackM = 0) {
   const t = String(text || '').trim();
@@ -299,7 +300,7 @@ async function main() {
       await tick();
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error('Reminders worker tick error:', e);
+      console.error('Reminders worker tick error:', sanitizeErrorForLog(e));
     }
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, pollSeconds * 1000));
@@ -308,7 +309,7 @@ async function main() {
 
 main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error('Fatal reminders worker error:', err);
+  console.error('Fatal reminders worker error:', sanitizeErrorForLog(err));
   process.exitCode = 1;
 });
 

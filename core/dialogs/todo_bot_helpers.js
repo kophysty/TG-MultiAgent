@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const moment = require('moment');
+const { sanitizeForLog } = require('../runtime/log_sanitize');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -14,8 +15,12 @@ function isAiEnabled() {
 function debugLog(event, fields = {}) {
   if (!isDebugEnabled()) return;
   // Never log secrets. Keep payloads small and mostly metadata.
+  const safeFields = {};
+  for (const [k, v] of Object.entries(fields || {})) {
+    safeFields[k] = sanitizeForLog(v);
+  }
   // eslint-disable-next-line no-console
-  console.log(`[tg_debug] ${event}`, fields);
+  console.log(`[tg_debug] ${event}`, safeFields);
 }
 
 async function safeEditStatus({ bot, chatId, messageId, text }) {

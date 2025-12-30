@@ -30,11 +30,25 @@ function createCallbackQueryHandler({
   waitingFor,
   DATE_CATEGORIES,
   notionRepo,
+  chatSecurity,
 }) {
   return async function handleCallbackQuery(query) {
     const chatId = query.message.chat.id;
     const action = query.data;
     debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
+
+    if (chatSecurity) {
+      try {
+        await chatSecurity.touchFromCallback(query);
+        if (await chatSecurity.shouldBlockChat(chatId)) {
+          await chatSecurity.maybeReplyRevoked(chatId);
+          bot.answerCallbackQuery(query.id);
+          return;
+        }
+      } catch {
+        // ignore security failures
+      }
+    }
 
     if (action && action.startsWith('tool:')) {
       const [, act, actionId] = action.split(':');

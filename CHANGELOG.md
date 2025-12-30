@@ -59,6 +59,14 @@ All notable changes to this project will be documented in this file.
   - If `Area` is `select` or `multi_select` and no option matches, the bot can create a new option (without duplicates) and set it.
 - Bot UX:
   - Reply keyboard now uses `Start` button (works the same as `/start`) instead of showing `/struct` by default.
-- Bumped todo bot version to `v0.1.14`.
+- Security logs hotfix:
+  - Debug logs sanitize Telegram bot token in URLs and error messages.
+  - Added global handlers for `unhandledRejection` and `uncaughtException` that log sanitized errors only.
+- Security (sessions, notify, revoke):
+  - Added sessions store with Postgres backend and file fallback.
+  - Admin notifications on first contact from a new chatId.
+  - Admin commands: `/sessions`, `/security_status`, `/revoke`, `/revoke_here`, `/unrevoke`.
+  - Revoked chats are blocked for messages and callback queries.
+- Bumped todo bot version to `v0.1.16`.
 
 

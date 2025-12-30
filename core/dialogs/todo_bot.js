@@ -7,6 +7,8 @@ const { classifyConfirmIntent } = require('../ai/confirm_intent');
 const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
+const { sanitizeErrorForLog, sanitizeForLog } = require('../runtime/log_sanitize');
+const { createChatSecurity, formatChatLine } = require('../runtime/chat_security');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -21,8 +23,12 @@ function isAiEnabled() {
 function debugLog(event, fields = {}) {
   if (!isDebugEnabled()) return;
   // Never log secrets. Keep payloads small and mostly metadata.
+  const safeFields = {};
+  for (const [k, v] of Object.entries(fields || {})) {
+    safeFields[k] = sanitizeForLog(v);
+  }
   // eslint-disable-next-line no-console
-  console.log(`[tg_debug] ${event}`, fields);
+  console.log(`[tg_debug] ${event}`, safeFields);
 }
 
 async function safeEditStatus({ bot, chatId, messageId, text }) {
@@ -642,6 +648,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   debugLog('bot_init', { databaseIds });
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
+  const chatSecurity = createChatSecurity({ bot, pgPool });
   // Legacy alias used by older command handlers and manual flows.
   // Keep it to avoid accidental "notionRepo is not defined" runtime errors.
   const notionRepo = tasksRepo;
@@ -821,8 +828,13 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     timers.delete(chatId);
   }
 
-  const handleStart = (msg) => {
+  const handleStart = async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     const cmd = String(msg.text || '').trim();
     debugLog('incoming_command', { chatId, command: cmd || '/start', from: msg.from?.username || null });
     const opts = {
@@ -851,6 +863,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
   bot.onText(/\/reminders_on/, async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/reminders_on', from: msg.from?.username || null });
     if (!remindersRepo) {
       bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL в .env и перезапусти бота.');
@@ -866,6 +883,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
   bot.onText(/\/reminders_off/, async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/reminders_off', from: msg.from?.username || null });
     if (!remindersRepo) {
       bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL в .env и перезапусти бота.');
@@ -881,6 +903,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
   bot.onText(/\/struct/, async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/struct', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'getDatabase' });
@@ -896,8 +923,83 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
   });
 
-  bot.onText(/\/addtask/, (msg) => {
+  // Security admin commands (notify + sessions + revoke)
+  bot.onText(/^\/sessions(?:\s+(\d+))?\s*$/i, async (msg, match) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const limit = match && match[1] ? Number(match[1]) : 20;
+    const rows = await chatSecurity.listSessions({ limit });
+    if (!rows.length) {
+      bot.sendMessage(chatId, 'Список пуст.');
+      return;
+    }
+    const lines = ['Известные чаты (sessions):', `backend: ${chatSecurity.backendName()}`, ''];
+    for (const r of rows) {
+      lines.push(`- ${formatChatLine(r)}`);
+    }
+    bot.sendMessage(chatId, lines.join('\n'));
+  });
+
+  bot.onText(/^\/security_status\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const rows = await chatSecurity.listSessions({ limit: 200 });
+    const revokedCount = rows.filter((r) => Boolean(r.revoked)).length;
+    bot.sendMessage(chatId, [`Security status:`, `- backend: ${chatSecurity.backendName()}`, `- known chats: ${rows.length}`, `- revoked: ${revokedCount}`].join('\n'));
+  });
+
+  bot.onText(/^\/revoke_here(?:\s+(.+))?\s*$/i, async (msg, match) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    const reason = match && match[1] ? String(match[1]).trim() : null;
+    await chatSecurity.revokeChat({ actorChatId, targetChatId: actorChatId, reason });
+    bot.sendMessage(actorChatId, 'Ок. Этот чат отключен (revoked).');
+  });
+
+  bot.onText(/^\/revoke\s+(\d+)(?:\s+(.+))?\s*$/i, async (msg, match) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    const targetChatId = Number(match[1]);
+    const reason = match && match[2] ? String(match[2]).trim() : null;
+    await chatSecurity.revokeChat({ actorChatId, targetChatId, reason });
+    bot.sendMessage(actorChatId, `Ок. Отключил чат ${targetChatId}.`);
+  });
+
+  bot.onText(/^\/unrevoke\s+(\d+)\s*$/i, async (msg, match) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    const targetChatId = Number(match[1]);
+    await chatSecurity.unrevokeChat({ actorChatId, targetChatId });
+    bot.sendMessage(actorChatId, `Ок. Вернул доступ для чата ${targetChatId}.`);
+  });
+
+  bot.onText(/\/addtask/, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/addtask', from: msg.from?.username || null });
     pendingTask.set(chatId, { id: null, text: null });
     bot.sendMessage(chatId, 'Please enter your new task:');
@@ -905,6 +1007,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
   bot.onText(/\/list/, async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/list', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'listTasks' });
@@ -953,6 +1060,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
   bot.onText(/\/today/, async (msg) => {
     const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
     debugLog('incoming_command', { chatId, command: '/today', from: msg.from?.username || null });
     try {
       debugLog('notion_call', { op: 'listTasks' });
@@ -1004,6 +1116,12 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const from = msg.from?.username || null;
+
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
 
     // Ignore commands here (handled by onText handlers).
     if (msg.text && msg.text.startsWith('/')) return;
@@ -1321,14 +1439,15 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     waitingFor,
     DATE_CATEGORIES,
     notionRepo,
+    chatSecurity,
   });
   bot.on('callback_query', handleCallbackQuery);
 
   bot.on('polling_error', (error) => {
     // Do not crash on transient errors.
     // eslint-disable-next-line no-console
-    console.error('Polling error:', error);
-    debugLog('polling_error', { code: error?.code || null, message: String(error?.message || '') });
+    console.error('Polling error:', sanitizeErrorForLog(error));
+    debugLog('polling_error', { code: error?.code || null, message: sanitizeForLog(String(error?.message || '')) });
     if (error.code === 'EFATAL') {
       setTimeout(() => {
         bot.stopPolling().then(() => bot.startPolling());
