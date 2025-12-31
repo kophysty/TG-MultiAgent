@@ -10,6 +10,11 @@ All notable changes to this project will be documented in this file.
   - Reminders worker now syncs memory both ways (Notion edits win) and pushes profile summaries.
   - Planner receives a short memory summary in context.
 
+- Tasks delete UX (AI + voice):
+  - Task resolve now matches RU voice to LAT titles (translit + local fuzzy fallback).
+  - Multi-delete from one message is supported via confirm queue.
+  - Deprecated confirm always shows task title and keeps queue between steps.
+
 - Initial repository bootstrap (git, ignore rules, baseline docs).
 - Added `docs/` with structured documentation exported from Notion "Base structure".
 - Updated `README.md` to point to Notion as the single source of truth and to `docs/index.md`.

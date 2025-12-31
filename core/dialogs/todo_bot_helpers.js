@@ -270,6 +270,19 @@ function buildQueryVariants(queryText) {
   // aggressive: remove spaces between digit groups: "1 2 3 4" -> "1234"
   push(base.replace(/\s+/g, '').trim());
 
+  // prefix tokens: help when the user says extra words that Notion title does not contain
+  const tokens = base.split(' ').map((x) => x.trim()).filter(Boolean);
+  if (tokens.length >= 2) {
+    push(tokens[0]);
+    push(tokens.slice(0, 2).join(' '));
+  }
+  // latin-only tokens (common for mixed RU/EN voice: "Automatic 4 единицы" -> "Automatic")
+  const latinTokens = tokens.filter((t) => /^[A-Za-z0-9_.:-]+$/.test(t));
+  if (latinTokens.length) {
+    push(latinTokens.join(' '));
+    push(latinTokens[0]);
+  }
+
   return variants.slice(0, 5);
 }
 
@@ -296,6 +309,309 @@ async function findTasksFuzzy({ notionRepo, queryText, limit }) {
   }
 
   return { tasks: best, usedQueryText: bestQuery };
+}
+
+function translitRuToLat(text) {
+  const s = String(text || '');
+  const map = {
+    а: 'a',
+    б: 'b',
+    в: 'v',
+    г: 'g',
+    д: 'd',
+    е: 'e',
+    ё: 'e',
+    ж: 'zh',
+    з: 'z',
+    и: 'i',
+    й: 'y',
+    к: 'k',
+    л: 'l',
+    м: 'm',
+    н: 'n',
+    о: 'o',
+    п: 'p',
+    р: 'r',
+    с: 's',
+    т: 't',
+    у: 'u',
+    ф: 'f',
+    х: 'h',
+    ц: 'ts',
+    ч: 'ch',
+    ш: 'sh',
+    щ: 'sch',
+    ъ: '',
+    ы: 'y',
+    ь: '',
+    э: 'e',
+    ю: 'yu',
+    я: 'ya',
+  };
+  let out = '';
+  for (const ch of s) {
+    const low = ch.toLowerCase();
+    const rep = Object.prototype.hasOwnProperty.call(map, low) ? map[low] : ch;
+    out += rep;
+  }
+  return out;
+}
+
+function normalizeForFuzzy(text) {
+  // Normalize into a simple latin-ish key:
+  // - lowercase
+  // - strip punctuation
+  // - collapse spaces
+  // - keep letters+digits only
+  const s = String(text || '')
+    .toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const latinized = translitRuToLat(s);
+  return latinized.replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function levenshteinDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  if (s === t) return 0;
+  if (!s) return t.length;
+  if (!t) return s.length;
+  const m = s.length;
+  const n = t.length;
+  const dp = new Array(n + 1);
+  for (let j = 0; j <= n; j++) dp[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j];
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost);
+      prev = tmp;
+    }
+  }
+  return dp[n];
+}
+
+function similarityRatio(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  const maxLen = Math.max(s.length, t.length);
+  if (!maxLen) return 1;
+  const dist = levenshteinDistance(s, t);
+  return 1 - dist / maxLen;
+}
+
+function tokenOverlapScore(a, b) {
+  const at = String(a || '')
+    .split(' ')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const bt = String(b || '')
+    .split(' ')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (!at.length || !bt.length) return 0;
+  const bset = new Set(bt);
+  const hit = at.filter((x) => bset.has(x)).length;
+  return hit / Math.max(1, Math.min(at.length, bt.length));
+}
+
+function tokenToTokenFuzzyScore(queryNorm, titleNorm) {
+  const STOP = new Set([
+    // RU translit stopwords
+    'edinitsa',
+    'edinitsy',
+    'edinic',
+    'edinicah',
+    'edinicami',
+    'edinice',
+    'edinicu',
+    // common filler
+    'zadacha',
+    'zadachi',
+    'task',
+    'board',
+    'borda',
+  ]);
+  const qTokens = String(queryNorm || '')
+    .split(' ')
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3)
+    .filter((x) => /[a-z]/i.test(x))
+    .filter((x) => !STOP.has(x));
+  const tTokens = String(titleNorm || '')
+    .split(' ')
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3)
+    .filter((x) => /[a-z]/i.test(x));
+  if (!qTokens.length || !tTokens.length) return 0;
+
+  let sum = 0;
+  let max = 0;
+  for (const qt of qTokens) {
+    let best = 0;
+    for (const tt of tTokens) {
+      const sim = similarityRatio(qt, tt);
+      if (sim > best) best = sim;
+      if (best >= 0.92) break;
+    }
+    if (best > max) max = best;
+    sum += best;
+  }
+  const avg = sum / qTokens.length;
+  // Combine avg + max to prefer at least one strong token hit (RU->EN, voice artifacts).
+  return avg * 0.55 + max * 0.45;
+}
+
+function scoreTaskTitleMatch({ query, title }) {
+  const q = normalizeForFuzzy(query);
+  const t = normalizeForFuzzy(title);
+  if (!q || !t) return 0;
+  const overlap = tokenOverlapScore(q, t);
+  const tokenFuzzy = tokenToTokenFuzzyScore(q, t);
+  // Prefer token fuzzy. Whole-string similarity is noisy for mismatched long phrases (digits/time),
+  // so keep it out of the main score.
+  return tokenFuzzy * 0.9 + overlap * 0.1;
+}
+
+function buildMultiQueryCandidates(queryText) {
+  const raw = String(queryText || '').trim();
+  if (!raw) return [];
+  const base = raw.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // We only split by "и" when we have strong signals that the user listed multiple items.
+  // This avoids breaking phrases like "найди и удали ..." into garbage queue items.
+  const hasListSeparators = /[,;]/.test(base) || /:\s+/.test(base) || /(\s+потом\s+|\s+затем\s+|\s+then\s+)/i.test(base);
+  const splitRe = hasListSeparators
+    ? /(?:,|;|:\s+|\s+then\s+|\s+потом\s+|\s+затем\s+|\s+и\s+)/i
+    : /(?:,|;|:\s+|\s+then\s+|\s+потом\s+|\s+затем\s+)/i;
+
+  // Split on commas and common joiners. Keep it simple and safe.
+  const parts = base
+    .split(splitRe)
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+    .map((x) => x.replace(/^[-–:]+/, '').trim())
+    .filter(Boolean);
+
+  // Remove leading boilerplate fragments from voice/text.
+  const cleaned = [];
+  const isGarbage = (v) => {
+    const s = String(v || '').trim().toLowerCase();
+    if (!s) return true;
+    if (s.length < 4) return true;
+    if (/^(привет|приветик|hi|hello|hey)\b/i.test(s)) return true;
+    if (/^(найди|поиск|search|find)\b/i.test(s)) return true;
+    if (/^(удали(ть)?|удалить|убери(ть)?|убрать|delete|remove)\b/i.test(s)) return true;
+    if (/^(задача|задачи|task|tasks)\b/i.test(s)) return true;
+    return false;
+  };
+
+  for (const p of parts) {
+    const v = p
+      .replace(
+        /^(привет|приветик|hi|hello|hey)[\p{P}\p{S}\s]*/iu,
+        ''
+      )
+      .replace(
+        /^(найди|поиск|search|find)[\p{P}\p{S}\s]*/iu,
+        ''
+      )
+      .replace(
+        /^(?:и[\p{P}\p{S}\s]+)?(удали(ть)?|удалить|убери(ть)?|убрать|снеси|delete|remove)[\p{P}\p{S}\s]*/iu,
+        ''
+      )
+      .replace(
+        /^(из\s+борды\s+с\s+задачами|с\s+борды\s+с\s+задачами|из\s+борды|с\s+борды|в\s+борде|на\s+борде|в\s+борде\s+с\s+задачами|на\s+борде\s+с\s+задачами)[\p{P}\p{S}\s]*/iu,
+        ''
+      )
+      .replace(/^(задач(у|и)|task|tasks)[\p{P}\p{S}\s]*/iu, '')
+      .replace(/^(task\s+был|был)[\p{P}\p{S}\s]*/iu, '')
+      .replace(/^потом[\p{P}\p{S}\s]*/iu, '')
+      .replace(/^затем[\p{P}\p{S}\s]*/iu, '')
+      .replace(/^[-–:]+/g, '')
+      .trim();
+    if (!v) continue;
+    if (isGarbage(v)) continue;
+    // Trim trailing punctuation/quotes from voice artifacts
+    const vv = v.replace(/[.,"'«»]+$/g, '').trim();
+    if (!vv) continue;
+    if (isGarbage(vv)) continue;
+    if (!cleaned.includes(vv)) cleaned.push(vv);
+  }
+  return cleaned.slice(0, 10);
+}
+
+function inferRequestedTaskActionFromText(userText) {
+  const t = String(userText || '').toLowerCase();
+  // Be strict: only infer action when user clearly asks to delete/remove.
+  // "delete" => move_to_deprecated (soft delete)
+  if (/(удали(ть)?|удалить|убери(ть)?|убрать|снеси|удал(и|й)\s+задач|delete)/.test(t)) return 'move_to_deprecated';
+  // "done" signals
+  if (/(сдела(й|и)\s+выполненн|отмет(ь|и)\s+как\s+выполненн|mark\s+done|done)/.test(t)) return 'mark_done';
+  return null;
+}
+
+async function findTasksFuzzyEnhanced({ notionRepo, queryText, limit }) {
+  // 1) Notion title contains (fast, server-side)
+  const baseTries = buildQueryVariants(queryText);
+  const tries = [];
+  for (const q of baseTries) {
+    if (q && !tries.includes(q)) tries.push(q);
+    const tr = translitRuToLat(q);
+    if (tr && tr !== q && !tries.includes(tr)) tries.push(tr);
+  }
+
+  const seen = new Set();
+  let best = [];
+  let bestQuery = tries[0] || queryText;
+
+  for (const q of tries.slice(0, 8)) {
+    const res = await notionRepo.findTasks({ queryText: q, limit });
+    const uniq = [];
+    for (const t of res || []) {
+      if (!t?.id) continue;
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      uniq.push(t);
+    }
+    if (uniq.length > best.length) {
+      best = uniq;
+      bestQuery = q;
+    }
+    if (best.length >= 2) break;
+  }
+
+  if (best.length) return { tasks: best, usedQueryText: bestQuery, source: 'notion' };
+
+  // 2) Fallback: fetch last N tasks and do local fuzzy match.
+  // Notion DB query supports max 100 per request. We intentionally keep it lightweight.
+  let recent = [];
+  try {
+    recent = await notionRepo.listTasks({ limit: 100 });
+  } catch {
+    recent = [];
+  }
+
+  const scored = [];
+  for (const t of recent || []) {
+    if (!t?.id) continue;
+    if (Array.isArray(t.tags) && t.tags.includes('Deprecated')) continue;
+    const score = scoreTaskTitleMatch({ query: queryText, title: t.title || '' });
+    scored.push({ score, task: t });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const topScore = scored[0]?.score || 0;
+  // If even the best match is too weak, do not suggest anything.
+  if (topScore < 0.22) return { tasks: [], usedQueryText: String(queryText || '').trim(), source: 'local' };
+
+  const lim = Math.min(Math.max(1, Number(limit) || 20), 20);
+  const threshold = Math.max(0.28, topScore - 0.12);
+  const picked = scored.filter((x) => x.score >= threshold).slice(0, lim).map((x) => x.task);
+  return { tasks: picked, usedQueryText: String(queryText || '').trim(), source: 'local' };
 }
 
 function normalizeCategoryInput(category) {
@@ -769,6 +1085,8 @@ module.exports = {
   inferListHintsFromText,
   buildQueryVariants,
   findTasksFuzzy,
+  findTasksFuzzyEnhanced,
+  buildMultiQueryCandidates,
   normalizeCategoryInput,
   normalizeTagsForDisplay,
   isAffirmativeText,
@@ -803,6 +1121,7 @@ module.exports = {
   normalizeSocialStatus,
   extractNotionErrorInfo,
   buildPickPlatformKeyboard,
+  inferRequestedTaskActionFromText,
 };
 
 

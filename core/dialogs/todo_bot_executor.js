@@ -28,6 +28,9 @@ const {
   buildToolConfirmKeyboard,
   buildPickTaskKeyboard,
   buildPickPlatformKeyboard,
+  findTasksFuzzyEnhanced,
+  buildMultiQueryCandidates,
+  inferRequestedTaskActionFromText,
 } = require('./todo_bot_helpers');
 
 function createToolExecutor({
@@ -109,9 +112,98 @@ function createToolExecutor({
 
       if (toolName === 'notion.find_tasks') {
         const queryText = String(args?.queryText || '').trim();
-        const { tasks } = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 20 });
+        const { tasks, source } = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText, limit: 20 });
         const filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
-        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":` });
+        const inferredAction = inferRequestedTaskActionFromText(userText);
+
+        // If the user asked to delete/done in the same message, do not ask again.
+        if (inferredAction === 'move_to_deprecated') {
+          const parts = buildMultiQueryCandidates(userText);
+          const t = String(userText || '').toLowerCase();
+          const andCount = (t.match(/\sи\s/g) || []).length;
+          const wantsMany =
+            /(удали|убери|delete|remove)/.test(t) &&
+            ((/удали\s+их|убери\s+их/.test(t)) ||
+              (/(задач(и|ами|ах|ам)|tasks\b)/i.test(t)) ||
+              andCount >= 2 ||
+              parts.length > 1);
+
+          // If the message suggests multiple tasks, try to find multiple matches by the whole sentence.
+          // This handles voice cases where separators are missing between titles.
+          let multiFound = null;
+          if (wantsMany) {
+            try {
+              const all = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText: userText, limit: 10 });
+              const allFiltered = (all.tasks || []).filter((x) => !x?.tags?.includes('Deprecated'));
+              if (allFiltered.length > 1) multiFound = allFiltered;
+            } catch {
+              multiFound = null;
+            }
+          }
+
+          // Keep queue for multi-delete; remove the current queryText from queue when possible.
+          const qKey = normalizeTitleKey(queryText);
+          const queue = [];
+          if (Array.isArray(multiFound) && multiFound.length > 1) {
+            // Use exact titles as queue entries (safer than parsing raw text).
+            for (const it of multiFound) {
+              const title = String(it?.title || '').trim();
+              if (!title) continue;
+              // Skip the first chosen candidate, will be set below
+              // (we keep all titles here and later slice based on chosen id).
+              if (!queue.includes(title)) queue.push(title);
+              if (queue.length >= 10) break;
+            }
+          } else if (parts.length > 1) {
+            for (const p of parts) {
+              const k = normalizeTitleKey(p);
+              if (!k) continue;
+              // Drop exact and near-duplicate variants (e.g. "автоматик" vs "автоматика")
+              if (k === qKey) continue;
+              if (qKey && (k.startsWith(qKey) || qKey.startsWith(k))) continue;
+              if (!queue.includes(p)) queue.push(p);
+              if (queue.length >= 9) break;
+            }
+          }
+
+          if (!filtered.length) {
+            bot.sendMessage(chatId, `По "${queryText}" ничего не нашел. Уточни название.`);
+            return;
+          }
+          if (filtered.length === 1) {
+            const chosen = filtered[0];
+            // If queue was constructed from multiFound titles, drop chosen title from queue.
+            const chosenTitleKey = normalizeTitleKey(String(chosen.title || ''));
+            const nextQueue = queue
+              .filter((q) => normalizeTitleKey(q) !== chosenTitleKey)
+              .slice(0, 9);
+            const actionId = makeId(`${chatId}:${Date.now()}:notion.move_to_deprecated:${chosen.id}`);
+            pendingToolActionByChatId.set(chatId, {
+              id: actionId,
+              kind: 'notion.move_to_deprecated',
+              payload: { pageId: chosen.id, _queueQueries: nextQueue.length ? nextQueue : undefined },
+              createdAt: Date.now(),
+            });
+            bot.sendMessage(
+              chatId,
+              [`Нашел задачу: "${chosen.title}".`, 'Перенести задачу в Deprecated?'].join('\n'),
+              buildToolConfirmKeyboard({ actionId })
+            );
+            return;
+          }
+          const items = filtered.slice(0, 10).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+          pendingToolActionByChatId.set(chatId, {
+            id: null,
+            kind: 'notion.move_to_deprecated',
+            payload: { _candidates: items, _queueQueries: queue.length ? queue : undefined },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, 'Нашел несколько задач для удаления. Выбери:', buildPickTaskKeyboard({ items }));
+          return;
+        }
+
+        const suffix = source === 'local' ? ' (локальный fuzzy)' : '';
+        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":${suffix}` });
         return;
       }
 
@@ -868,21 +960,49 @@ function createToolExecutor({
       const pageId = args?.pageId ? String(args.pageId) : null;
       const taskIndex = args?.taskIndex ? Number(args.taskIndex) : null;
       let resolvedPageId = pageId;
+      let resolvedTitle = null;
 
       if (!resolvedPageId && taskIndex && lastShownListByChatId.has(chatId)) {
         const found = (lastShownListByChatId.get(chatId) || []).find((x) => x.index === taskIndex);
-        if (found) resolvedPageId = found.id;
+        if (found) {
+          resolvedPageId = found.id;
+          resolvedTitle = found.title || null;
+        }
+      }
+
+      // Multi-delete: allow queryText to contain multiple task names for move_to_deprecated.
+      if (toolName === 'notion.move_to_deprecated' && !resolvedPageId && args?.queryText) {
+        const parts = buildMultiQueryCandidates(args.queryText);
+        if (parts.length > 1) {
+          args = { ...args, queryText: parts[0], _queueQueries: parts.slice(1) };
+        }
       }
 
       if (!resolvedPageId && args?.queryText) {
         const queryText = String(args.queryText).trim();
-        const fuzzy = await findTasksFuzzy({ notionRepo: tasksRepo, queryText, limit: 10 });
+        const fuzzy = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText, limit: 10 });
         const candidates = (fuzzy.tasks || []).filter((t) => !t.tags.includes('Deprecated'));
-        if (candidates.length === 1) resolvedPageId = candidates[0].id;
+        if (candidates.length === 1) {
+          resolvedPageId = candidates[0].id;
+          resolvedTitle = candidates[0].title || null;
+        }
         if (candidates.length > 1) {
           const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
           pendingToolActionByChatId.set(chatId, { id: null, kind: toolName, payload: { ...args, _candidates: items }, createdAt: Date.now() });
           bot.sendMessage(chatId, 'Нашел несколько задач. Выбери:', buildPickTaskKeyboard({ items }));
+          return;
+        }
+        if (!candidates.length && toolName === 'notion.move_to_deprecated' && Array.isArray(args?._queueQueries) && args._queueQueries.length) {
+          // If first chunk produced nothing, try next chunk automatically.
+          const next = args._queueQueries[0];
+          const rest = args._queueQueries.slice(1);
+          await executeToolPlan({
+            chatId,
+            from,
+            toolName,
+            args: { ...args, queryText: next, _queueQueries: rest },
+            userText,
+          });
           return;
         }
       }
@@ -901,8 +1021,15 @@ function createToolExecutor({
 
       if (toolName === 'notion.move_to_deprecated') {
         const actionId = makeId(`${chatId}:${Date.now()}:notion.move_to_deprecated:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.move_to_deprecated', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
-        bot.sendMessage(chatId, 'Перенести задачу в Deprecated?', buildToolConfirmKeyboard({ actionId }));
+        const queue = Array.isArray(args?._queueQueries) && args._queueQueries.length ? args._queueQueries : undefined;
+        pendingToolActionByChatId.set(chatId, {
+          id: actionId,
+          kind: 'notion.move_to_deprecated',
+          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _queueQueries: queue },
+          createdAt: Date.now(),
+        });
+        const titleLine = resolvedTitle ? `Задача: "${resolvedTitle}".` : null;
+        bot.sendMessage(chatId, [titleLine, 'Перенести задачу в Deprecated?'].filter(Boolean).join('\n'), buildToolConfirmKeyboard({ actionId }));
         return;
       }
 

@@ -81,6 +81,17 @@ function createCallbackQueryHandler({
           if (kind === 'notion.move_to_deprecated') {
             await tasksRepo.moveToDeprecated({ pageId: payload.pageId });
             bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
+            if (Array.isArray(payload._queueQueries) && payload._queueQueries.length) {
+              const next = payload._queueQueries[0];
+              const rest = payload._queueQueries.slice(1);
+              await executeToolPlan({
+                chatId,
+                from: query?.from?.username || null,
+                toolName: 'notion.move_to_deprecated',
+                args: { queryText: next, _queueQueries: rest },
+                userText: String(next || ''),
+              });
+            }
             return;
           }
           if (kind === 'notion.update_task') {

@@ -20,3 +20,6 @@ CREATE INDEX IF NOT EXISTS idx_preferences_chat_active ON preferences (chat_id, 
 CREATE INDEX IF NOT EXISTS idx_preferences_updated_at ON preferences (updated_at);
 
 
+
+
+

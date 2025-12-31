@@ -32,5 +32,6 @@ Use: `execution_history/sprint_template.md`
 - `2025-12-30_time_ctx_due_datetime_ideas_area.md` - Контекст времени для AI, парсинг due datetime, Ideas Area options и кнопка Start
 - `2025-12-30_security_sessions_revoke.md` - Security: sessions store, notify админам, revoke/unrevoke chatId
 - `2025-12-30_memory_preferences.md` - Memory: preferences (Postgres) + Notion UI sync + planner injection
+- `2025-12-31_tasks_delete_fuzzy_multi.md` - Tasks delete UX: RU voice to LAT title fuzzy resolve + multi-delete queue
 
 

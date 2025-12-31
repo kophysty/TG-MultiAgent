@@ -92,4 +92,12 @@
   - Planner context now includes a short memory summary for the current chat.
   - Bumped todo bot version to `v0.1.17`.
 
+## 2025-12-31
+
+- Tasks delete UX (AI + voice):
+  - Улучшен резолв задач по названию: RU voice -> LAT title (translit + local fuzzy fallback).
+  - Удаление нескольких задач из одного сообщения работает цепочкой подтверждений.
+  - Подтверждение Deprecated всегда показывает название задачи и корректно продолжает очередь.
+  - Bumped todo bot version to `v0.1.22`.
+
 
