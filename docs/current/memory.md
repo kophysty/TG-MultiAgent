@@ -97,6 +97,14 @@
 - `TG_CHAT_SUMMARY_BATCH` - сколько чатов обрабатывать за тик, default 3
 - `TG_CHAT_SUMMARY_MODEL` - модель для summary, default `gpt-4.1-mini`
 
+### Управление сбором памяти per chat_id
+
+Сбор chat memory можно отключить для конкретного чата через Preferences (Notion UI).
+
+- key: `chat_memory_enabled`
+- если preference не задан, то по умолчанию сбор включен
+- если `Active=false` или значение "off/false/0/нет" то сбор user и assistant сообщений в `chat_messages` отключается и worker не будет пересчитывать summary
+
 ## Preference suggestions (предложение сохранить preference)
 
 Иногда пользователь пишет устойчивые предпочтения не в явном виде "запомни". В этом случае бот может предложить сохранить preference кнопками.

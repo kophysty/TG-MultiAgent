@@ -126,6 +126,12 @@
   - Bumped todo bot version to `v0.1.27`.
   - Bumped reminders worker version to `v0.1.3`.
 
+- Healthcheck и chat_memory_enabled:
+  - Добавлен preference `chat_memory_enabled` для отключения chat memory per chat_id (по умолчанию включено).
+  - Добавлен CLI healthcheck (Postgres, Notion, Telegram send best-effort).
+  - Bumped todo bot version to `v0.1.28`.
+  - Bumped reminders worker version to `v0.1.4`.
+
 - Ideas/Social resolve UX:
   - Добавлен продвинутый fuzzy-resolve для Ideas и Social (RU voice -> LAT title, local fallback).
   - Можно ссылаться на элементы из последнего списка фразами типа "в первой идее" или "во втором посте".

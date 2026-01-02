@@ -23,6 +23,36 @@
 - `/revoke_here [reason]` - отключить текущий чат
 - `/unrevoke <chatId>` - включить чат обратно
 
+## Dev команды (healthcheck)
+
+Это не Telegram команды, а команды для проверки окружения перед запуском.
+
+Запускать из корня репозитория:
+
+- Проверить Postgres и Notion:
+
+```bash
+node core/runtime/healthcheck.js
+```
+
+- Только Postgres:
+
+```bash
+node core/runtime/healthcheck.js --postgres
+```
+
+- Только Notion:
+
+```bash
+node core/runtime/healthcheck.js --notion
+```
+
+- Telegram send (best-effort в admin chat):
+
+```bash
+node core/runtime/healthcheck.js --telegram
+```
+
 
 
 

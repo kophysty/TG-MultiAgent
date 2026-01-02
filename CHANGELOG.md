@@ -30,6 +30,11 @@ All notable changes to this project will be documented in this file.
   - Todo bot injects work context into planner when `TG_WORK_CONTEXT_MODE=auto|always` and cache is fresh.
   - Bumped todo bot version to `v0.1.27` and reminders worker to `v0.1.3`.
 
+- Healthcheck and per-chat chat memory flag:
+  - Added `chat_memory_enabled` preference to disable chat memory for a specific chat_id (default enabled).
+  - Added CLI healthcheck script for Postgres, Notion, and Telegram send.
+  - Bumped todo bot version to `v0.1.28` and reminders worker to `v0.1.4`.
+
 - Ideas and Social resolve:
   - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).
   - Added last shown list references like "in the first idea" / "в первой идее" for update/archive flows.

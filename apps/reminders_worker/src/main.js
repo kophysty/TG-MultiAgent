@@ -245,6 +245,41 @@ async function main() {
     return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
   }
 
+  const chatMemoryEnabledCacheByChatId = new Map(); // chatId -> { enabled, ts }
+
+  async function isChatMemoryEnabledForChat(chatId) {
+    const safeChatId = Number(chatId);
+    if (!Number.isFinite(safeChatId)) return true;
+    const cached = chatMemoryEnabledCacheByChatId.get(safeChatId);
+    if (cached && Date.now() - cached.ts < 5 * 60_000) return Boolean(cached.enabled);
+    try {
+      const row = await prefsRepo.getPreference({ chatId: safeChatId, scope: 'global', key: 'chat_memory_enabled', activeOnly: false });
+      if (!row) {
+        chatMemoryEnabledCacheByChatId.set(safeChatId, { enabled: true, ts: Date.now() });
+        return true;
+      }
+      if (row.active === false) {
+        chatMemoryEnabledCacheByChatId.set(safeChatId, { enabled: false, ts: Date.now() });
+        return false;
+      }
+      const vHuman = String(row.value_human || '').trim().toLowerCase();
+      const vJson = row.value_json || {};
+      const v = vJson?.enabled;
+      const enabled =
+        v === false
+          ? false
+          : v === true
+            ? true
+            : vHuman
+              ? !(vHuman === '0' || vHuman === 'false' || vHuman === 'off' || vHuman === 'no' || vHuman === 'нет')
+              : true;
+      chatMemoryEnabledCacheByChatId.set(safeChatId, { enabled, ts: Date.now() });
+      return enabled;
+    } catch {
+      return true;
+    }
+  }
+
   async function chatSummaryTick() {
     if (!isChatSummaryEnabled()) return;
     const apiKey = process.env.OPENAI_API_KEY;
@@ -268,6 +303,7 @@ async function main() {
       const chatId = Number(c.chat_id);
       const lastMessageId = Number(c.last_message_id);
       if (!Number.isFinite(chatId) || !Number.isFinite(lastMessageId)) continue;
+      if (!(await isChatMemoryEnabledForChat(chatId))) continue;
 
       try {
         const [sumRow, rows] = await Promise.all([

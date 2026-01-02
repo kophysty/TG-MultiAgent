@@ -57,7 +57,7 @@ function isChatMemoryEnabled() {
   return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
 }
 
-function wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo }) {
+function wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo, shouldStoreAssistantMessage = null }) {
   return new Proxy(bot, {
     get(target, prop) {
       const orig = target[prop];
@@ -66,6 +66,19 @@ function wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo }) {
           const res = orig.call(target, chatId, text, options);
           Promise.resolve(res)
             .then((msg) => {
+              if (typeof shouldStoreAssistantMessage === 'function') {
+                return Promise.resolve(shouldStoreAssistantMessage(chatId)).then((ok) => {
+                  if (!ok) return null;
+                  const safeText = sanitizeTextForStorage(String(text || ''));
+                  if (!safeText.trim()) return null;
+                  return chatMemoryRepo.appendMessage({
+                    chatId,
+                    role: 'assistant',
+                    text: safeText,
+                    tgMessageId: msg?.message_id || null,
+                  });
+                });
+              }
               const safeText = sanitizeTextForStorage(String(text || ''));
               if (!safeText.trim()) return;
               return chatMemoryRepo.appendMessage({
@@ -713,7 +726,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       // If tables are missing, disable chat memory gracefully (no crashes).
       await pgPool.query('SELECT 1 FROM chat_messages LIMIT 1');
       chatMemoryRepo = repo;
-      bot = wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo });
+      bot = wrapTelegramBotWithChatMemory({
+        bot,
+        chatMemoryRepo,
+        shouldStoreAssistantMessage: async (cId) => await isChatMemoryEnabledForChat(cId),
+      });
       debugLog('chat_memory_enabled', { ok: true });
     } catch (e) {
       chatMemoryRepo = null;
@@ -756,6 +773,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
   const memoryCacheByChatId = new Map(); // chatId -> { summary, ts }
+  const chatMemoryEnabledCacheByChatId = new Map(); // chatId -> { enabled, ts }
 
   function buildMemorySummaryFromRows(rows) {
     const items = Array.isArray(rows) ? rows : [];
@@ -783,6 +801,39 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       return summary;
     } catch {
       return null;
+    }
+  }
+
+  async function isChatMemoryEnabledForChat(chatId) {
+    if (!preferencesRepo) return true;
+    const cached = chatMemoryEnabledCacheByChatId.get(chatId);
+    if (cached && Date.now() - cached.ts < 60_000) return Boolean(cached.enabled);
+    try {
+      const row = await preferencesRepo.getPreference({ chatId, scope: 'global', key: 'chat_memory_enabled', activeOnly: false });
+      // Default: enabled.
+      if (!row) {
+        chatMemoryEnabledCacheByChatId.set(chatId, { enabled: true, ts: Date.now() });
+        return true;
+      }
+      if (row.active === false) {
+        chatMemoryEnabledCacheByChatId.set(chatId, { enabled: false, ts: Date.now() });
+        return false;
+      }
+      const vHuman = String(row.value_human || '').trim().toLowerCase();
+      const vJson = row.value_json || {};
+      const v = vJson?.enabled;
+      const enabled =
+        v === false
+          ? false
+          : v === true
+            ? true
+            : vHuman
+              ? !(vHuman === '0' || vHuman === 'false' || vHuman === 'off' || vHuman === 'no' || vHuman === 'нет')
+              : true;
+      chatMemoryEnabledCacheByChatId.set(chatId, { enabled, ts: Date.now() });
+      return enabled;
+    } catch {
+      return true;
     }
   }
 
@@ -1427,12 +1478,14 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
     // Chat memory: store incoming user message text (including commands).
     if (chatMemoryRepo && msg.text) {
-      const safeText = sanitizeTextForStorage(String(msg.text || ''));
-      if (safeText.trim()) {
-        chatMemoryRepo
-          .appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: msg.message_id || null })
-          .catch(() => {});
-      }
+      Promise.resolve()
+        .then(async () => {
+          if (!(await isChatMemoryEnabledForChat(chatId))) return;
+          const safeText = sanitizeTextForStorage(String(msg.text || ''));
+          if (!safeText.trim()) return;
+          await chatMemoryRepo.appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: msg.message_id || null });
+        })
+        .catch(() => {});
     }
 
     // Preference extractor: run best-effort in background (do not block main flow).
@@ -1479,6 +1532,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         },
         appendUserTextToChatMemory: async ({ text, tgMessageId }) => {
           if (!chatMemoryRepo) return;
+          if (!(await isChatMemoryEnabledForChat(chatId))) return;
           const safeText = sanitizeTextForStorage(String(text || ''));
           if (!safeText.trim()) return;
           await chatMemoryRepo.appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: tgMessageId || null });

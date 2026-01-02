@@ -256,6 +256,29 @@ class PreferencesRepo {
       [Number(id), incrementAttempt ? 1 : 0, String(safeDelaySeconds), safeError]
     );
   }
+
+  async getPreference({ chatId, scope = 'global', key, activeOnly = false } = {}) {
+    const safeChatId = Number(chatId);
+    const safeScope = String(scope || 'global').trim() || 'global';
+    const safeKey = String(key || '').trim();
+    if (!Number.isFinite(safeChatId)) throw new Error('chatId is required');
+    if (!safeKey) throw new Error('key is required');
+
+    const where = ['chat_id = $1', 'scope = $2', 'pref_key = $3'];
+    const args = [safeChatId, safeScope, safeKey];
+    if (activeOnly) where.push('active = TRUE');
+
+    const res = await this._pool.query(
+      `
+      SELECT id, chat_id, scope, category, pref_key, value_json, value_human, active, source, created_at, updated_at
+      FROM preferences
+      WHERE ${where.join(' AND ')}
+      LIMIT 1
+      `,
+      args
+    );
+    return res.rows?.[0] || null;
+  }
 }
 
 module.exports = { PreferencesRepo };
