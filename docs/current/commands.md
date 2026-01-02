@@ -53,6 +53,16 @@ node core/runtime/healthcheck.js --notion
 node core/runtime/healthcheck.js --telegram
 ```
 
+## Dev: запуск bot и worker одной командой
+
+Запускать из корня репозитория:
+
+```bash
+node core/runtime/dev_runner.js --tests --debug --ai
+```
+
+Остановить: Ctrl+C в том же терминале.
+
 
 
 

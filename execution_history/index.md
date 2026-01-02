@@ -38,5 +38,6 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-02_ideas_social_resolve.md` - Ideas/Social: fuzzy resolve + ссылки на элементы списка + Project и merge тегов
 - `2026-01-02_work_context_cache.md` - Work context: Notion -> Postgres cache + bot injection
 - `2026-01-02_healthcheck_chat_memory_flag.md` - Healthcheck CLI + chat_memory_enabled flag
+- `2026-01-02_dev_runner.md` - Dev runner: one command to run bot + worker
 
 

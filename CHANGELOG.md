@@ -35,6 +35,9 @@ All notable changes to this project will be documented in this file.
   - Added CLI healthcheck script for Postgres, Notion, and Telegram send.
   - Bumped todo bot version to `v0.1.28` and reminders worker to `v0.1.4`.
 
+- Dev orchestration:
+  - Added `core/runtime/dev_runner.js` to run todo bot and reminders worker from one command.
+
 - Ideas and Social resolve:
   - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).
   - Added last shown list references like "in the first idea" / "в первой идее" for update/archive flows.
