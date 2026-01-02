@@ -24,6 +24,12 @@ All notable changes to this project will be documented in this file.
   - Fixed Notion sync so `pref_page_upsert` works when only Preferences DB is configured (Profiles DB is optional).
   - Bumped todo bot version to `v0.1.26` and reminders worker to `v0.1.2`.
 
+- Work context cache:
+  - Added `work_context_cache` table (Postgres).
+  - Reminders worker periodically fetches compact context from Notion (Tasks, Ideas, Social) and stores it per chat_id.
+  - Todo bot injects work context into planner when `TG_WORK_CONTEXT_MODE=auto|always` and cache is fresh.
+  - Bumped todo bot version to `v0.1.27` and reminders worker to `v0.1.3`.
+
 - Ideas and Social resolve:
   - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).
   - Added last shown list references like "in the first idea" / "в первой идее" for update/archive flows.

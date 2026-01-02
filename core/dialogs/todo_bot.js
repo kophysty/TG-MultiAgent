@@ -7,6 +7,7 @@ const { classifyConfirmIntent } = require('../ai/confirm_intent');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { ChatMemoryRepo } = require('../connectors/postgres/chat_memory_repo');
 const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
+const { WorkContextRepo } = require('../connectors/postgres/work_context_repo');
 const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
@@ -28,6 +29,15 @@ function isPreferenceExtractorEnabled() {
   const v = String(process.env.TG_PREF_EXTRACTOR_ENABLED || '').trim().toLowerCase();
   if (!v) return true;
   return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+}
+
+function getWorkContextMode() {
+  // off | auto | always
+  const v = String(process.env.TG_WORK_CONTEXT_MODE || '').trim().toLowerCase();
+  if (!v) return 'auto';
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return 'off';
+  if (v === 'always') return 'always';
+  return 'auto';
 }
 
 function debugLog(event, fields = {}) {
@@ -695,6 +705,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
   const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
   const memorySuggestionsRepo = pgPool ? new MemorySuggestionsRepo({ pool: pgPool }) : null;
+  const workCtxRepo = pgPool ? new WorkContextRepo({ pool: pgPool }) : null;
   let chatMemoryRepo = null;
   if (pgPool && isChatMemoryEnabled()) {
     const repo = new ChatMemoryRepo({ pool: pgPool });
@@ -804,6 +815,57 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       };
     } catch {
       return { chatSummary: null, chatHistory: null };
+    }
+  }
+
+  function shouldInjectWorkContext(userText) {
+    const mode = getWorkContextMode();
+    if (mode === 'off') return false;
+    if (mode === 'always') return true;
+
+    const t = String(userText || '').toLowerCase();
+    if (!t.trim()) return false;
+
+    // Heuristic: inject only for "discussion/analysis/planning" messages, not for direct CRUD commands.
+    const isCrudish =
+      /(добавь|создай|удали|перенеси|переименуй|пометь|сделай|выполни|запланируй|покажи|список|лист|today|\/(start|today|list|add|reminders_on|reminders_off))/i.test(
+        t
+      );
+    if (isCrudish) return false;
+
+    const isDiscussion =
+      /(что\s+мне\s+делать|как\s+лучше|какой\s+план|какие\s+приоритеты|на\s+что\s+фокус|составь\s+план|распланируй|дай\s+совет|оцен(и|ка)|проанализируй|подскажи|что\s+важнее)/i.test(
+        t
+      );
+    if (isDiscussion) return true;
+
+    // If the message is long enough, it is likely a discussion.
+    if (t.length >= 220) return true;
+
+    return false;
+  }
+
+  async function getWorkContextForChat(chatId) {
+    if (!workCtxRepo) return null;
+    try {
+      await pgPool.query('SELECT 1 FROM work_context_cache LIMIT 1');
+    } catch {
+      return null;
+    }
+    try {
+      const row = await workCtxRepo.getCache({ chatId, key: 'work_ctx' });
+      const text = row?.payload?.text ? String(row.payload.text) : '';
+      if (!text.trim()) return null;
+
+      const maxAgeMin = Math.min(7 * 24 * 60, Math.max(5, Number(process.env.TG_WORK_CONTEXT_MAX_AGE_MIN || 720)));
+      const updatedAt = row?.updated_at ? new Date(row.updated_at) : null;
+      if (updatedAt && Number.isFinite(updatedAt.getTime())) {
+        const ageMs = Date.now() - updatedAt.getTime();
+        if (ageMs > maxAgeMin * 60_000) return null;
+      }
+      return text.trim();
+    } catch {
+      return null;
     }
   }
 
@@ -1405,13 +1467,14 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         executeToolPlan,
         aiDraftByChatId,
         aiDraftById,
-        getPlannerContext: async () => {
+        getPlannerContext: async ({ userText } = {}) => {
           const [memorySummary, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
+          const workContext = shouldInjectWorkContext(userText || '') ? await getWorkContextForChat(chatId) : null;
           return {
             memorySummary,
             chatSummary: chatCtx?.chatSummary || null,
             chatHistory: chatCtx?.chatHistory || null,
-            workContext: null,
+            workContext,
           };
         },
         appendUserTextToChatMemory: async ({ text, tgMessageId }) => {
@@ -1592,7 +1655,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       const lastShown = lastShownListByChatId.get(chatId) || [];
       const lastShownIdeas = lastShownIdeasListByChatId.get(chatId) || [];
       const lastShownSocial = lastShownSocialListByChatId.get(chatId) || [];
-      const [memorySummary, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
+      const [memorySummary, chatCtx, workContext] = await Promise.all([
+        getMemorySummaryForChat(chatId),
+        getChatMemoryContextForChat(chatId),
+        shouldInjectWorkContext(text) ? getWorkContextForChat(chatId) : null,
+      ]);
       const plan = await planAgentAction({
         apiKey,
         model: aiModel,
@@ -1606,7 +1673,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         memorySummary,
         chatSummary: chatCtx?.chatSummary || null,
         chatHistory: chatCtx?.chatHistory || null,
-        workContext: null,
+        workContext,
       });
       if (plan.type === 'chat') {
         // Guard: for Journal-related intents, do not let the model ask the user to provide fields.

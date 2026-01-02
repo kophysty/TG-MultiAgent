@@ -116,6 +116,27 @@
 - `TG_PREF_EXTRACTOR_ENABLED` - включить/выключить extractor, default true
 - `TG_PREF_EXTRACTOR_MODEL` - модель для extractor, default `gpt-4.1-mini`
 
+## Work context cache (контекст из Notion для planner)
+
+Для запросов типа "что делать дальше" или "составь план" полезно подмешивать актуальный список задач, идей и постов из Notion.
+
+### Как работает
+
+- Reminders worker периодически собирает контекст из Notion и сохраняет в Postgres `work_context_cache` строго per `chat_id`.
+- Todo bot при `TG_WORK_CONTEXT_MODE=auto` подмешивает этот контекст в planner только для "discussion/analysis" сообщений (эвристика).
+
+### Переменные окружения (worker)
+
+- `TG_WORK_CONTEXT_ENABLED` - включить/выключить tick, default true
+- `TG_WORK_CONTEXT_SECONDS` - период обновления, default 1800 (30 минут)
+- `NOTION_IDEAS_DB_ID` - Ideas DB id
+- `NOTION_SOCIAL_DB_ID` - Social DB id
+
+### Переменные окружения (bot)
+
+- `TG_WORK_CONTEXT_MODE` - `off|auto|always`, default `auto`
+- `TG_WORK_CONTEXT_MAX_AGE_MIN` - максимальный возраст кэша для инжекта, default 720 (12 часов)
+
 ## Воркер: синхронизация
 
 В `apps/reminders_worker` добавлен периодический memory tick:

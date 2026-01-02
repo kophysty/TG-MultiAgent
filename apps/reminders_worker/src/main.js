@@ -5,8 +5,11 @@ const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/clien
 const { RemindersRepo } = require('../../../core/connectors/postgres/reminders_repo');
 const { PreferencesRepo } = require('../../../core/connectors/postgres/preferences_repo');
 const { ChatMemoryRepo } = require('../../../core/connectors/postgres/chat_memory_repo');
+const { WorkContextRepo } = require('../../../core/connectors/postgres/work_context_repo');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
 const { NotionPreferencesRepo } = require('../../../core/connectors/notion/preferences_repo');
+const { NotionIdeasRepo } = require('../../../core/connectors/notion/ideas_repo');
+const { NotionSocialRepo } = require('../../../core/connectors/notion/social_repo');
 const { sanitizeErrorForLog, sanitizeForLog } = require('../../../core/runtime/log_sanitize');
 const { summarizeChat } = require('../../../core/ai/chat_summarizer');
 const crypto = require('crypto');
@@ -216,7 +219,12 @@ async function main() {
   const repo = new RemindersRepo({ pool: pgPool });
   const prefsRepo = new PreferencesRepo({ pool: pgPool });
   const chatMemoryRepo = new ChatMemoryRepo({ pool: pgPool });
+  const workCtxRepo = new WorkContextRepo({ pool: pgPool });
   const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
+  const ideasDbId = process.env.NOTION_IDEAS_DB_ID || null;
+  const socialDbId = process.env.NOTION_SOCIAL_DB_ID || null;
+  const ideasRepo = ideasDbId ? new NotionIdeasRepo({ notionToken, databaseId: ideasDbId }) : null;
+  const socialRepo = socialDbId ? new NotionSocialRepo({ notionToken, databaseId: socialDbId }) : null;
 
   const preferencesDbId = process.env.NOTION_PREFERENCES_DB_ID || null;
   const profilesDbId = process.env.NOTION_PREFERENCE_PROFILES_DB_ID || null;
@@ -281,6 +289,143 @@ async function main() {
       await chatMemoryRepo.purgeOldMessages({ ttlDays });
     } catch {
       // ignore
+    }
+  }
+
+  function isWorkContextEnabled() {
+    const v = String(process.env.TG_WORK_CONTEXT_ENABLED || '').trim().toLowerCase();
+    if (!v) return true;
+    return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+  }
+
+  async function listWorkContextChatIds() {
+    // Prefer enabled subscriptions. If none exist, fall back to chats seen in chat memory (if enabled).
+    const subs = await repo.listEnabledSubscriptions();
+    const ids = new Set((subs || []).map((s) => Number(s.chatId)).filter((x) => Number.isFinite(x)));
+    if (ids.size) return Array.from(ids);
+
+    try {
+      const res = await pgPool.query(
+        `
+        SELECT DISTINCT chat_id
+        FROM chat_messages
+        WHERE created_at >= NOW() - interval '30 days'
+        ORDER BY chat_id ASC
+        LIMIT 200
+        `
+      );
+      for (const r of res.rows || []) {
+        const id = Number(r.chat_id);
+        if (Number.isFinite(id)) ids.add(id);
+      }
+    } catch {
+      // ignore
+    }
+    return Array.from(ids);
+  }
+
+  function renderTasksCompact({ overdue, upcoming, inbox }) {
+    const lines = [];
+    lines.push('Tasks (контекст):');
+    if (overdue?.length) {
+      lines.push('Overdue:');
+      for (const t of overdue.slice(0, 7)) lines.push(`- ${t.title}`);
+    }
+    if (upcoming?.length) {
+      lines.push('Next 15d:');
+      for (const t of upcoming.slice(0, 10)) {
+        const due = t.dueDate ? ` (${String(t.dueDate).slice(0, 10)})` : '';
+        lines.push(`- ${t.title}${due}`);
+      }
+    }
+    if (inbox?.length) {
+      lines.push('Inbox:');
+      for (const t of inbox.slice(0, 7)) lines.push(`- ${t.title}`);
+    }
+    return lines.join('\n');
+  }
+
+  function renderIdeasCompact(ideas) {
+    const lines = ['Ideas (recent):'];
+    const items = Array.isArray(ideas) ? ideas : [];
+    if (!items.length) {
+      lines.push('(пусто)');
+      return lines.join('\n');
+    }
+    for (const it of items.slice(0, 10)) lines.push(`- ${it.title}`);
+    return lines.join('\n');
+  }
+
+  function renderSocialCompact(posts) {
+    const lines = ['Social (window -10..+10d):'];
+    const items = Array.isArray(posts) ? posts : [];
+    if (!items.length) {
+      lines.push('(пусто)');
+      return lines.join('\n');
+    }
+    for (const it of items.slice(0, 10)) {
+      const d = it.postDate ? ` (${String(it.postDate).slice(0, 10)})` : '';
+      const plats = Array.isArray(it.platform) && it.platform.length ? ` [${it.platform.join(', ')}]` : '';
+      lines.push(`- ${it.title}${plats}${d}`);
+    }
+    return lines.join('\n');
+  }
+
+  async function workContextTick() {
+    if (!isWorkContextEnabled()) return;
+    if (!ideasRepo || !socialRepo) return;
+
+    // Ensure table exists.
+    try {
+      await pgPool.query('SELECT 1 FROM work_context_cache LIMIT 1');
+    } catch {
+      return;
+    }
+
+    const chatIds = await listWorkContextChatIds();
+    if (!chatIds.length) return;
+
+    const tzName = tz || 'Europe/Moscow';
+    const today = yyyyMmDdInTz(tzName, new Date());
+    const todayStartUtc = zonedWallClockToUtc({ tz: tzName, yyyyMmDd: today, h: 0, min: 0 });
+    const windowEndUtc = zonedWallClockToUtc({ tz: tzName, yyyyMmDd: addDaysYyyyMmDd(today, 16), h: 0, min: 0 });
+    const socialStart = addDaysYyyyMmDd(today, -10);
+    const socialEnd = addDaysYyyyMmDd(today, 11);
+
+    const [overdueRaw, upcomingRaw, inboxRaw, ideasRaw, socialRaw] = await Promise.all([
+      notionRepo.listTasks({ dueDateBefore: todayStartUtc.toISOString(), limit: 50 }),
+      notionRepo.listTasks({ dueDateOnOrAfter: todayStartUtc.toISOString(), dueDateBefore: windowEndUtc.toISOString(), limit: 100 }),
+      notionRepo.listTasks({ tag: 'Inbox', limit: 50 }),
+      ideasRepo.listIdeas({ limit: 10 }),
+      socialRepo.listPosts({ dateOnOrAfter: socialStart, dateBefore: socialEnd, limit: 30 }),
+    ]);
+
+    const overdue = uniqById(overdueRaw).filter((t) => !isDone(t) && !isDeprecated(t));
+    const upcoming = uniqById(upcomingRaw).filter((t) => !isDone(t) && !isDeprecated(t));
+    const inbox = uniqById(inboxRaw).filter((t) => !isDone(t) && !isDeprecated(t));
+
+    const payload = {
+      tz: tzName,
+      today,
+      tasks: { overdue: overdue.slice(0, 12), upcoming: upcoming.slice(0, 15), inbox: inbox.slice(0, 12) },
+      ideas: (ideasRaw || []).slice(0, 12),
+      social: (socialRaw || []).slice(0, 12),
+      text: [renderTasksCompact({ overdue, upcoming, inbox }), '', renderIdeasCompact(ideasRaw), '', renderSocialCompact(socialRaw)]
+        .join('\n')
+        .trim(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const payloadHash = md5(JSON.stringify({ tz: payload.tz, today: payload.today, tasks: payload.tasks, ideas: payload.ideas, social: payload.social }));
+
+    // Write the same payload per chat_id (isolation by key). This avoids cross-chat leakage if we later add per-chat fields.
+    for (const chatId of chatIds) {
+      try {
+        await workCtxRepo.upsertCache({ chatId, key: 'work_ctx', payload, payloadHash });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('workContextTick error:', sanitizeErrorForLog(e), { chatId: sanitizeForLog(chatId) });
+      }
     }
   }
 
@@ -512,6 +657,8 @@ async function main() {
   let nextMemoryRunAt = 0;
   let nextChatSummaryRunAt = 0;
   const chatSummarySeconds = Math.max(60, Number(process.env.TG_CHAT_SUMMARY_SECONDS || 900));
+  let nextWorkCtxRunAt = 0;
+  const workCtxSeconds = Math.max(60, Number(process.env.TG_WORK_CONTEXT_SECONDS || 1800));
   // Simple polling loop
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -525,6 +672,10 @@ async function main() {
       if (nowMs >= nextChatSummaryRunAt) {
         await chatSummaryTick();
         nextChatSummaryRunAt = nowMs + chatSummarySeconds * 1000;
+      }
+      if (nowMs >= nextWorkCtxRunAt) {
+        await workContextTick();
+        nextWorkCtxRunAt = nowMs + workCtxSeconds * 1000;
       }
     } catch (e) {
       // eslint-disable-next-line no-console

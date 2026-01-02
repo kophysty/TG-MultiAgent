@@ -131,7 +131,7 @@ async function handleVoiceMessage({
     const lastShownIdeas = lastShownIdeasListByChatId ? lastShownIdeasListByChatId.get(chatId) || [] : [];
     const lastShownSocial = lastShownSocialListByChatId ? lastShownSocialListByChatId.get(chatId) || [] : [];
     try {
-      const ctx = typeof getPlannerContext === 'function' ? await getPlannerContext() : {};
+      const ctx = typeof getPlannerContext === 'function' ? await getPlannerContext({ userText: transcript }) : {};
       const plan = await planAgentAction({
         apiKey,
         model: aiModel,

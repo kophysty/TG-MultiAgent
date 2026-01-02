@@ -102,6 +102,20 @@
   - модель "придумала" не тот день (например 2024 год)
   - сдвиг времени из-за интерпретации UTC против локального времени
 
+## Контекст для planner (memory, chat, work)
+
+Перед вызовом planner бот может подмешивать контекст:
+
+- Memory summary (preferences) - из Postgres `preferences`
+- Chat summary и recent messages - из Postgres `chat_summaries` и `chat_messages`
+- Work context - компактный контекст из Notion (Tasks, Ideas, Social), который воркер кладет в Postgres `work_context_cache`
+
+Work context подмешивается не всегда:
+
+- `TG_WORK_CONTEXT_MODE=auto` - только для сообщений "обсуждение/планирование" по эвристике
+- `TG_WORK_CONTEXT_MODE=always` - всегда
+- `TG_WORK_CONTEXT_MODE=off` - никогда
+
 ## Ideas DB и Social Media Planner
 
 ### Ideas DB

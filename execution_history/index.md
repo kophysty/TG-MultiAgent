@@ -36,5 +36,6 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-02_chat_memory.md` - Chat memory: chat_messages/chat_summaries + planner injection + worker summaries
 - `2026-01-02_preference_suggestions.md` - Preference suggestions: extractor + Save/Don't save buttons + Notion sync queue
 - `2026-01-02_ideas_social_resolve.md` - Ideas/Social: fuzzy resolve + ссылки на элементы списка + Project и merge тегов
+- `2026-01-02_work_context_cache.md` - Work context: Notion -> Postgres cache + bot injection
 
 

@@ -119,6 +119,13 @@
   - Bumped todo bot version to `v0.1.26`.
   - Bumped reminders worker version to `v0.1.2`.
 
+- Work context cache:
+  - Добавлена таблица `work_context_cache` (Postgres).
+  - Worker периодически собирает компактный контекст из Notion (Tasks, Ideas, Social) и сохраняет per chat_id.
+  - Todo bot подмешивает work context в planner при `TG_WORK_CONTEXT_MODE=auto|always` и свежем кэше.
+  - Bumped todo bot version to `v0.1.27`.
+  - Bumped reminders worker version to `v0.1.3`.
+
 - Ideas/Social resolve UX:
   - Добавлен продвинутый fuzzy-resolve для Ideas и Social (RU voice -> LAT title, local fallback).
   - Можно ссылаться на элементы из последнего списка фразами типа "в первой идее" или "во втором посте".
