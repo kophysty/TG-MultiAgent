@@ -66,7 +66,12 @@ class NotionIdeasRepo {
       [];
     const areaType = db.properties?.Area?.type || null;
     const tagsType = db.properties?.Tags?.type || null;
-    return { category, priority, status, area, tags, areaType, tagsType };
+    const project =
+      db.properties?.Project?.select?.options?.map((o) => o.name) ||
+      db.properties?.Project?.multi_select?.options?.map((o) => o.name) ||
+      [];
+    const projectType = db.properties?.Project?.type || null;
+    return { category, priority, status, area, tags, project, areaType, tagsType, projectType };
   }
 
   async _ensureSelectOptions({ propertyName, desiredNames }) {
@@ -188,6 +193,34 @@ class NotionIdeasRepo {
     return { added: [], resolved: want };
   }
 
+  async ensureTagsOptions({ desiredNames }) {
+    const want = this._uniqNames(desiredNames);
+    if (!want.length) return { added: [], resolved: [] };
+
+    const db = await this.getDatabase();
+    const prop = db.properties?.Tags;
+    const type = prop?.type || null;
+
+    if (type === 'select') return await this._ensureSelectOptions({ propertyName: 'Tags', desiredNames: want });
+    if (type === 'multi_select') return await this._ensureMultiSelectOptions({ propertyName: 'Tags', desiredNames: want });
+
+    return { added: [], resolved: want };
+  }
+
+  async ensureProjectOptions({ desiredNames }) {
+    const want = this._uniqNames(desiredNames);
+    if (!want.length) return { added: [], resolved: [] };
+
+    const db = await this.getDatabase();
+    const prop = db.properties?.Project;
+    const type = prop?.type || null;
+
+    if (type === 'select') return await this._ensureSelectOptions({ propertyName: 'Project', desiredNames: want });
+    if (type === 'multi_select') return await this._ensureMultiSelectOptions({ propertyName: 'Project', desiredNames: want });
+
+    return { added: [], resolved: want };
+  }
+
   async listIdeas({ category, status, queryText, limit = 20 } = {}) {
     const payload = {
       sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
@@ -222,7 +255,7 @@ class NotionIdeasRepo {
     return schema?.[name]?.type || null;
   }
 
-  async createIdea({ title, category, status, priority, source, area, tags }) {
+  async createIdea({ title, category, status, priority, source, area, tags, project }) {
     const schema = await this._ensureSchema();
     const props = {};
 
@@ -256,6 +289,13 @@ class NotionIdeasRepo {
       if (t === 'multi_select') props.Tags = { multi_select: arr.filter(Boolean).map((x) => ({ name: x })) };
       else if (t === 'select') props.Tags = { select: arr[0] ? { name: arr[0] } : null };
     }
+    if (project !== undefined && this._hasProp(schema, 'Project')) {
+      const t = this._propType(schema, 'Project');
+      const p = String(project || '').trim();
+      if (t === 'select') props.Project = { select: p ? { name: p } : null };
+      else if (t === 'multi_select') props.Project = { multi_select: p ? [{ name: p }] : [] };
+      else if (t === 'rich_text') props.Project = { rich_text: p ? [{ type: 'text', text: { content: p } }] : [] };
+    }
 
     const resp = await this._http.post('pages', {
       parent: { database_id: this._dbId },
@@ -264,7 +304,7 @@ class NotionIdeasRepo {
     return this._pageToIdea(resp.data);
   }
 
-  async updateIdea({ pageId, title, category, status, priority, source, area, tags }) {
+  async updateIdea({ pageId, title, category, status, priority, source, area, tags, project }) {
     const schema = await this._ensureSchema();
     const props = {};
 
@@ -308,6 +348,13 @@ class NotionIdeasRepo {
         else props.Tags = { select: arr[0] ? { name: arr[0] } : null };
       }
     }
+    if (project !== undefined && this._hasProp(schema, 'Project')) {
+      const t = this._propType(schema, 'Project');
+      const p = String(project || '').trim();
+      if (t === 'select') props.Project = { select: p ? { name: p } : null };
+      else if (t === 'multi_select') props.Project = { multi_select: p ? [{ name: p }] : [] };
+      else if (t === 'rich_text') props.Project = { rich_text: p ? [{ type: 'text', text: { content: p } }] : [] };
+    }
 
     if (!Object.keys(props).length) {
       return { id: pageId, title: null, status: null, priority: null, categories: [], url: null };
@@ -339,6 +386,11 @@ class NotionIdeasRepo {
     return { ok: true };
   }
 
+  async getIdea({ pageId }) {
+    const resp = await this._http.get(`pages/${String(pageId)}`);
+    return this._pageToIdea(resp.data);
+  }
+
   _pageToIdea(page) {
     const props = page.properties || {};
     const titleParts = props.Idea?.title || [];
@@ -346,6 +398,11 @@ class NotionIdeasRepo {
     const categories = (props.Category?.multi_select || []).map((t) => t.name).filter(Boolean);
     const area = props.Area?.select?.name || this._richTextToPlainText(props.Area?.rich_text) || null;
     const tags = (props.Tags?.multi_select || []).map((t) => t.name).filter(Boolean);
+    const project =
+      props.Project?.select?.name ||
+      (props.Project?.multi_select || []).map((t) => t.name).filter(Boolean) ||
+      this._richTextToPlainText(props.Project?.rich_text) ||
+      null;
     return {
       id: page.id,
       url: page.url,
@@ -355,6 +412,7 @@ class NotionIdeasRepo {
       categories,
       area,
       tags,
+      project,
     };
   }
 }

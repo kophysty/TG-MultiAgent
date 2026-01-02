@@ -4,7 +4,7 @@
 
 ## Версия
 
-- Текущая версия todo bot: `v0.1.22`
+- Текущая версия todo bot: `v0.1.25`
 
 ## Разделы
 
@@ -51,9 +51,18 @@ TG_BOT_MODE=tests TG_DEBUG=1 npm start
 AI включается флагом:
 
 - `TG_AI=1`
-- `TG_AI_MODEL=gpt-4.1-mini`
+- `TG_AI_MODEL=gpt-4.1` (по умолчанию в коде используется `gpt-4.1` если переменная не задана)
 
 Пример запуска:
+
+```bash
+cd apps/todo_bot
+TG_BOT_MODE=tests TG_DEBUG=1 TG_AI=1 TG_AI_MODEL=gpt-4.1 npm start
+```
+
+Примечание:
+
+- Если хочешь использовать более легкую модель, можно указать `TG_AI_MODEL=gpt-4.1-mini`.
 
 ```bash
 cd apps/todo_bot

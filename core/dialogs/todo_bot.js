@@ -5,10 +5,13 @@ const todoBotPkg = require('../../apps/todo_bot/package.json');
 const { planAgentAction } = require('../ai/agent_planner');
 const { classifyConfirmIntent } = require('../ai/confirm_intent');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
+const { ChatMemoryRepo } = require('../connectors/postgres/chat_memory_repo');
+const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
 const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
-const { sanitizeErrorForLog, sanitizeForLog } = require('../runtime/log_sanitize');
+const { sanitizeErrorForLog, sanitizeForLog, sanitizeTextForStorage } = require('../runtime/log_sanitize');
+const { extractPreferences, isLikelyPreferenceText } = require('../ai/preference_extractor');
 const { createChatSecurity, formatChatLine } = require('../runtime/chat_security');
 
 function isDebugEnabled() {
@@ -21,6 +24,12 @@ function isAiEnabled() {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+function isPreferenceExtractorEnabled() {
+  const v = String(process.env.TG_PREF_EXTRACTOR_ENABLED || '').trim().toLowerCase();
+  if (!v) return true;
+  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+}
+
 function debugLog(event, fields = {}) {
   if (!isDebugEnabled()) return;
   // Never log secrets. Keep payloads small and mostly metadata.
@@ -30,6 +39,41 @@ function debugLog(event, fields = {}) {
   }
   // eslint-disable-next-line no-console
   console.log(`[tg_debug] ${event}`, safeFields);
+}
+
+function isChatMemoryEnabled() {
+  const v = String(process.env.TG_CHAT_MEMORY_ENABLED || '').trim().toLowerCase();
+  if (!v) return true;
+  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+}
+
+function wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo }) {
+  return new Proxy(bot, {
+    get(target, prop) {
+      const orig = target[prop];
+      if (prop === 'sendMessage' && typeof orig === 'function') {
+        return (chatId, text, options) => {
+          const res = orig.call(target, chatId, text, options);
+          Promise.resolve(res)
+            .then((msg) => {
+              const safeText = sanitizeTextForStorage(String(text || ''));
+              if (!safeText.trim()) return;
+              return chatMemoryRepo.appendMessage({
+                chatId,
+                role: 'assistant',
+                text: safeText,
+                tgMessageId: msg?.message_id || null,
+              });
+            })
+            .catch(() => {});
+          return res;
+        };
+      }
+      // Preserve `this` binding for methods.
+      if (typeof orig === 'function') return orig.bind(target);
+      return orig;
+    },
+  });
 }
 
 async function safeEditStatus({ bot, chatId, messageId, text }) {
@@ -650,6 +694,22 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
   const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
+  const memorySuggestionsRepo = pgPool ? new MemorySuggestionsRepo({ pool: pgPool }) : null;
+  let chatMemoryRepo = null;
+  if (pgPool && isChatMemoryEnabled()) {
+    const repo = new ChatMemoryRepo({ pool: pgPool });
+    try {
+      // If tables are missing, disable chat memory gracefully (no crashes).
+      await pgPool.query('SELECT 1 FROM chat_messages LIMIT 1');
+      chatMemoryRepo = repo;
+      bot = wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo });
+      debugLog('chat_memory_enabled', { ok: true });
+    } catch (e) {
+      chatMemoryRepo = null;
+      debugLog('chat_memory_disabled', { ok: false, reason: 'pg_or_tables_missing', message: String(e?.message || e) });
+    }
+  }
+
   const chatSecurity = createChatSecurity({ bot, pgPool });
   // Legacy alias used by older command handlers and manual flows.
   // Keep it to avoid accidental "notionRepo is not defined" runtime errors.
@@ -677,10 +737,12 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const aiDraftByChatId = new Map(); // chatId -> { id, task, updatedAt, awaitingConfirmation }
   const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
   const pendingToolActionByChatId = new Map(); // chatId -> { id, kind, payload, createdAt }
-  const lastShownListByChatId = new Map(); // chatId -> [{ index, id, title }]
-  const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }]
+  const lastShownListByChatId = new Map(); // chatId -> [{ index, id, title }] (tasks)
+  const lastShownIdeasListByChatId = new Map(); // chatId -> [{ index, id, title }] (ideas)
+  const lastShownSocialListByChatId = new Map(); // chatId -> [{ index, id, title }] (social posts)
+  const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }] (journal)
   const tz = process.env.TG_TZ || 'Europe/Moscow';
-  const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1-mini';
+  const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
   const memoryCacheByChatId = new Map(); // chatId -> { summary, ts }
 
@@ -713,6 +775,110 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
   }
 
+  function formatChatHistoryForPlanner(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) return '';
+    const lines = [];
+    for (const r of items.slice(-30)) {
+      const role = String(r?.role || '').trim() || 'unknown';
+      const text = oneLinePreview(String(r?.text || ''), 220);
+      if (!text) continue;
+      lines.push(`${role}: ${text}`);
+    }
+    return lines.join('\n');
+  }
+
+  async function getChatMemoryContextForChat(chatId) {
+    if (!chatMemoryRepo) return { chatSummary: null, chatHistory: null };
+    try {
+      const lastN = Math.min(200, Math.max(1, Number(process.env.TG_CHAT_MEMORY_LAST_N || 50)));
+      const [sumRow, rows] = await Promise.all([
+        chatMemoryRepo.getSummary({ chatId }),
+        chatMemoryRepo.listLastN({ chatId, limit: lastN }),
+      ]);
+      const chatSummary = sumRow?.summary ? String(sumRow.summary).trim() : null;
+      const chatHistory = formatChatHistoryForPlanner(rows);
+      return {
+        chatSummary: chatSummary || null,
+        chatHistory: chatHistory || null,
+      };
+    } catch {
+      return { chatSummary: null, chatHistory: null };
+    }
+  }
+
+  function buildPreferenceSuggestionKeyboard({ suggestionId }) {
+    const rows = [
+      [
+        { text: 'Сохранить', callback_data: `mem:accept:${suggestionId}`.slice(0, 64) },
+        { text: 'Не сохранять', callback_data: `mem:reject:${suggestionId}`.slice(0, 64) },
+      ],
+    ];
+    return { reply_markup: { inline_keyboard: rows } };
+  }
+
+  async function maybeSuggestPreferenceFromText({ chatId, userText, sourceMessageId }) {
+    if (!isPreferenceExtractorEnabled()) return;
+    if (!pgPool || !preferencesRepo || !memorySuggestionsRepo) return;
+    if (!isAiEnabled()) return;
+    if (!isLikelyPreferenceText(userText)) return;
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return;
+
+    // Require chat memory context to be available only when configured; otherwise proceed with empty.
+    const [memSum, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
+    let candidates = [];
+    try {
+      candidates = await extractPreferences({
+        apiKey,
+        model: process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || 'gpt-4.1-mini',
+        userText,
+        preferencesSummary: memSum || '',
+        chatSummary: chatCtx?.chatSummary || '',
+        chatHistory: chatCtx?.chatHistory || '',
+      });
+    } catch (e) {
+      debugLog('pref_extractor_error', { chatId, message: String(e?.message || e) });
+      return;
+    }
+
+    if (!candidates.length) return;
+
+    // One suggestion at a time to avoid spam.
+    const c = candidates[0];
+    const candidate = {
+      key: c.key,
+      scope: c.scope || 'global',
+      category: c.category || null,
+      value_human: c.valueHuman,
+      value_json: c.valueJson || {},
+      confidence: c.confidence,
+      reason: c.reason,
+    };
+
+    try {
+      // Ensure table exists
+      await pgPool.query('SELECT 1 FROM memory_suggestions LIMIT 1');
+    } catch {
+      return;
+    }
+
+    const row = await memorySuggestionsRepo.createPreferenceSuggestion({
+      chatId,
+      candidate,
+      sourceMessageId: sourceMessageId || null,
+    });
+    if (!row?.id) return;
+
+    const text = [
+      'Похоже, это похоже на предпочтение.',
+      `Сохранить?`,
+      `- ${candidate.key}: ${oneLinePreview(candidate.value_human, 140)}`,
+    ].join('\n');
+
+    bot.sendMessage(chatId, text, buildPreferenceSuggestionKeyboard({ suggestionId: row.id }));
+  }
+
   async function renderAndRememberJournalList({ chatId, entries, title }) {
     const shown = (entries || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
     lastShownJournalListByChatId.set(chatId, shown);
@@ -733,6 +899,44 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       if (typeof it.energy === 'number') rating.push(`E:${it.energy}`);
       const ratingSuffix = rating.length ? ` (${rating.join(' ')})` : '';
       lines.push(`- ${date}${it.title}${typeSuffix}${ratingSuffix}`);
+    }
+    bot.sendMessage(chatId, lines.join('\n'));
+  }
+
+  async function renderAndRememberIdeasList({ chatId, ideas, title }) {
+    const shown = (ideas || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+    lastShownIdeasListByChatId.set(chatId, shown);
+
+    const lines = [title, ''];
+    if (!shown.length) {
+      lines.push('(пусто)');
+      bot.sendMessage(chatId, lines.join('\n'));
+      return;
+    }
+
+    for (const it of shown) {
+      lines.push(`${it.index}. ${it.title}`);
+    }
+    bot.sendMessage(chatId, lines.join('\n'));
+  }
+
+  async function renderAndRememberSocialList({ chatId, posts, title }) {
+    const shown = (posts || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+    lastShownSocialListByChatId.set(chatId, shown);
+
+    const lines = [title, ''];
+    if (!shown.length) {
+      lines.push('(пусто)');
+      bot.sendMessage(chatId, lines.join('\n'));
+      return;
+    }
+
+    const slice = (posts || []).slice(0, 20);
+    for (let i = 0; i < slice.length; i++) {
+      const it = slice[i];
+      if (!it || !it.title) continue;
+      const plats = Array.isArray(it.platform) && it.platform.length ? ` [${it.platform.join(', ')}]` : '';
+      lines.push(`${i + 1}. ${it.title}${plats}`);
     }
     bot.sendMessage(chatId, lines.join('\n'));
   }
@@ -849,7 +1053,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     tz,
     pendingToolActionByChatId,
     lastShownListByChatId,
+    lastShownIdeasListByChatId,
+    lastShownSocialListByChatId,
     renderAndRememberList,
+    renderAndRememberIdeasList,
+    renderAndRememberSocialList,
     renderAndRememberJournalList,
     resolveJournalPageIdFromLastShown,
   });
@@ -1155,6 +1363,29 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       return;
     }
 
+    // Chat memory: store incoming user message text (including commands).
+    if (chatMemoryRepo && msg.text) {
+      const safeText = sanitizeTextForStorage(String(msg.text || ''));
+      if (safeText.trim()) {
+        chatMemoryRepo
+          .appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: msg.message_id || null })
+          .catch(() => {});
+      }
+    }
+
+    // Preference extractor: run best-effort in background (do not block main flow).
+    if (msg.text) {
+      Promise.resolve()
+        .then(() =>
+          maybeSuggestPreferenceFromText({
+            chatId,
+            userText: String(msg.text || ''),
+            sourceMessageId: msg.message_id || null,
+          })
+        )
+        .catch(() => {});
+    }
+
     // Ignore commands here (handled by onText handlers).
     if (msg.text && msg.text.startsWith('/')) return;
 
@@ -1169,9 +1400,33 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         tz,
         notionCategories,
         lastShownListByChatId,
+        lastShownIdeasListByChatId,
+        lastShownSocialListByChatId,
         executeToolPlan,
         aiDraftByChatId,
         aiDraftById,
+        getPlannerContext: async () => {
+          const [memorySummary, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
+          return {
+            memorySummary,
+            chatSummary: chatCtx?.chatSummary || null,
+            chatHistory: chatCtx?.chatHistory || null,
+            workContext: null,
+          };
+        },
+        appendUserTextToChatMemory: async ({ text, tgMessageId }) => {
+          if (!chatMemoryRepo) return;
+          const safeText = sanitizeTextForStorage(String(text || ''));
+          if (!safeText.trim()) return;
+          await chatMemoryRepo.appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: tgMessageId || null });
+        },
+        maybeSuggestPreferenceFromText: async ({ chatId: cId, userText, sourceMessageId }) => {
+          await maybeSuggestPreferenceFromText({
+            chatId: cId,
+            userText,
+            sourceMessageId,
+          });
+        },
       });
       return;
     }
@@ -1335,16 +1590,23 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
     try {
       const lastShown = lastShownListByChatId.get(chatId) || [];
-      const memorySummary = await getMemorySummaryForChat(chatId);
+      const lastShownIdeas = lastShownIdeasListByChatId.get(chatId) || [];
+      const lastShownSocial = lastShownSocialListByChatId.get(chatId) || [];
+      const [memorySummary, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
       const plan = await planAgentAction({
         apiKey,
         model: aiModel,
         userText: text,
         allowedCategories,
         lastShownList: lastShown,
+        lastShownIdeasList: lastShownIdeas,
+        lastShownSocialList: lastShownSocial,
         tz,
         nowIso: new Date().toISOString(),
         memorySummary,
+        chatSummary: chatCtx?.chatSummary || null,
+        chatHistory: chatCtx?.chatHistory || null,
+        workContext: null,
       });
       if (plan.type === 'chat') {
         // Guard: for Journal-related intents, do not let the model ask the user to provide fields.
@@ -1485,6 +1747,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     DATE_CATEGORIES,
     notionRepo,
     chatSecurity,
+    pgPool,
   });
   bot.on('callback_query', handleCallbackQuery);
 

@@ -33,5 +33,8 @@ Use: `execution_history/sprint_template.md`
 - `2025-12-30_security_sessions_revoke.md` - Security: sessions store, notify админам, revoke/unrevoke chatId
 - `2025-12-30_memory_preferences.md` - Memory: preferences (Postgres) + Notion UI sync + planner injection
 - `2025-12-31_tasks_delete_fuzzy_multi.md` - Tasks delete UX: RU voice to LAT title fuzzy resolve + multi-delete queue
+- `2026-01-02_chat_memory.md` - Chat memory: chat_messages/chat_summaries + planner injection + worker summaries
+- `2026-01-02_preference_suggestions.md` - Preference suggestions: extractor + Save/Don't save buttons + Notion sync queue
+- `2026-01-02_ideas_social_resolve.md` - Ideas/Social: fuzzy resolve + ссылки на элементы списка + Project и merge тегов
 
 

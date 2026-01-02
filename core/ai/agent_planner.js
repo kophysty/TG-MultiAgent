@@ -62,11 +62,13 @@ function buildSystemPrompt({ allowedCategories }) {
     '- If user talks about ideas (RU: "идея", "идеи") use Ideas tools.',
     '  - list ideas: notion.list_ideas (args: category?, status?, queryText?, limit?)',
     '  - create idea: notion.create_idea (args: title, category?, status?, priority?, source?, description?)',
+    '  - update idea: notion.update_idea (args: pageId OR queryText/taskIndex, and patch fields: title?, category?, status?, priority?, source?, area?, tags?, project?)',
     '  - archive idea: notion.archive_idea (args: pageId or queryText/taskIndex)',
     '',
     '- If user talks about social posts (RU: "пост", "соцсети", platform names) use Social tools.',
     '  - list posts: notion.list_social_posts (args: platform?, status?, dateOnOrAfter?, dateBefore?, queryText?, limit?)',
     '  - create post: notion.create_social_post (args: title, platform?, postDate?, contentType?, status?, postUrl?, description?)',
+    '  - update post: notion.update_social_post (args: pageId OR queryText/taskIndex, and patch fields: title?, platform?, postDate?, contentType?, status?, postUrl?)',
     '  - Prefer passing platform/status/contentType as exact Notion option names when possible.',
     '  - If the user says platform in RU/EN ("фб/фейсбук/facebook", "тг/телеграм/telegram", etc.), infer the intended platform and pass it in args.platform.',
     '  - If platform is missing or you are unsure, ask a short clarifying question OR call create_social_post with platform=null - the bot will show a platform picker.',
@@ -101,13 +103,18 @@ function normalizePlan(obj) {
 
 async function planAgentAction({
   apiKey,
-  model = 'gpt-4.1-mini',
+  model = 'gpt-4.1',
   userText,
   allowedCategories,
   lastShownList,
+  lastShownIdeasList,
+  lastShownSocialList,
   tz,
   nowIso,
   memorySummary,
+  chatSummary,
+  chatHistory,
+  workContext,
 }) {
   const system = buildSystemPrompt({ allowedCategories });
 
@@ -139,11 +146,48 @@ async function planAgentAction({
     }
   }
 
+  if (Array.isArray(lastShownIdeasList) && lastShownIdeasList.length) {
+    ctxLines.push('');
+    ctxLines.push('Last shown ideas list (index -> title):');
+    for (const item of lastShownIdeasList.slice(0, 20)) {
+      ctxLines.push(`${item.index}. ${item.title}`);
+    }
+  }
+
+  if (Array.isArray(lastShownSocialList) && lastShownSocialList.length) {
+    ctxLines.push('');
+    ctxLines.push('Last shown social posts list (index -> title):');
+    for (const item of lastShownSocialList.slice(0, 20)) {
+      ctxLines.push(`${item.index}. ${item.title}`);
+    }
+  }
+
   const mem = String(memorySummary || '').trim();
   if (mem) {
     ctxLines.push('');
     ctxLines.push('User preferences (memory):');
     ctxLines.push(mem);
+  }
+
+  const chatSum = String(chatSummary || '').trim();
+  if (chatSum) {
+    ctxLines.push('');
+    ctxLines.push('Chat summary:');
+    ctxLines.push(chatSum);
+  }
+
+  const chatHist = String(chatHistory || '').trim();
+  if (chatHist) {
+    ctxLines.push('');
+    ctxLines.push('Recent chat messages:');
+    ctxLines.push(chatHist);
+  }
+
+  const work = String(workContext || '').trim();
+  if (work) {
+    ctxLines.push('');
+    ctxLines.push('Work context:');
+    ctxLines.push(work);
   }
 
   const messages = [

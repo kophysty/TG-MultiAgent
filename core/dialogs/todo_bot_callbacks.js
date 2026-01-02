@@ -1,10 +1,12 @@
 const {
   debugLog,
+  oneLinePreview,
   makeId,
   truncate,
   buildToolConfirmKeyboard,
   buildPickTaskKeyboard,
   buildDateKeyboard,
+  normalizeOptionKey,
   normalizeCategoryInput,
   normalizeDueDateInput,
   inferJournalTypeFromText,
@@ -12,6 +14,27 @@ const {
   inferJournalContextFromText,
   inferMoodEnergyFromText,
 } = require('./todo_bot_helpers');
+
+const crypto = require('crypto');
+const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
+const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
+
+function md5(text) {
+  return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
+}
+
+function computePreferenceSyncHash({ externalId, key, scope, category, active, valueHuman, valueJson }) {
+  const payload = {
+    externalId: String(externalId || ''),
+    key: String(key || ''),
+    scope: String(scope || ''),
+    category: String(category || ''),
+    active: Boolean(active),
+    valueHuman: String(valueHuman || ''),
+    valueJson: typeof valueJson === 'string' ? String(valueJson) : JSON.stringify(valueJson || {}),
+  };
+  return md5(JSON.stringify(payload));
+}
 
 function createCallbackQueryHandler({
   bot,
@@ -31,6 +54,7 @@ function createCallbackQueryHandler({
   DATE_CATEGORIES,
   notionRepo,
   chatSecurity,
+  pgPool = null,
 }) {
   return async function handleCallbackQuery(query) {
     const chatId = query.message.chat.id;
@@ -133,7 +157,28 @@ function createCallbackQueryHandler({
             return;
           }
           if (kind === 'notion.update_idea') {
-            await ideasRepo.updateIdea({ pageId: payload.pageId, ...payload.patch });
+            const patch = payload.patch || {};
+            if (payload.merge?.tags && patch.tags !== undefined && typeof ideasRepo.getIdea === 'function') {
+              let current = null;
+              try {
+                current = await ideasRepo.getIdea({ pageId: payload.pageId });
+              } catch {
+                current = null;
+              }
+              const cur = Array.isArray(current?.tags) ? current.tags : current?.tags ? [current.tags] : [];
+              const add = Array.isArray(patch.tags) ? patch.tags : patch.tags ? [patch.tags] : [];
+              const seen = new Set(cur.map((x) => normalizeOptionKey(x)));
+              const merged = [...cur];
+              for (const t of add) {
+                const key = normalizeOptionKey(t);
+                if (!key) continue;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                merged.push(String(t));
+              }
+              patch.tags = merged;
+            }
+            await ideasRepo.updateIdea({ pageId: payload.pageId, ...patch });
             bot.sendMessage(chatId, 'Готово. Обновил идею.');
             return;
           }
@@ -230,6 +275,109 @@ function createCallbackQueryHandler({
         } catch {
           bot.sendMessage(chatId, 'Не получилось выполнить действие в Notion.');
         }
+        return;
+      }
+
+      bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (action && action.startsWith('mem:')) {
+      // mem:accept:<id> | mem:reject:<id>
+      const parts = action.split(':');
+      const act = parts[1] || '';
+      const id = parts[2] || '';
+      const suggestionId = Number(id);
+      if (!pgPool) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Postgres не настроен. Нельзя сохранить память.');
+        return;
+      }
+      if (!Number.isFinite(suggestionId)) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Подтверждение устарело. Повтори сообщение.');
+        return;
+      }
+
+      const suggestionsRepo = new MemorySuggestionsRepo({ pool: pgPool });
+      const prefsRepo = new PreferencesRepo({ pool: pgPool });
+      const row = await suggestionsRepo.getSuggestionById({ id: suggestionId, chatId });
+      if (!row) {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Подтверждение устарело. Повтори сообщение.');
+        return;
+      }
+      if (row.status !== 'pending') {
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Уже обработано.');
+        return;
+      }
+
+      if (act === 'reject') {
+        await suggestionsRepo.decideSuggestion({ id: suggestionId, chatId, status: 'rejected' });
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, 'Ок, не буду сохранять.');
+        return;
+      }
+
+      if (act === 'accept') {
+        const cand = row.candidate || {};
+        const key = String(cand.key || '').trim();
+        const scope = String(cand.scope || 'global').trim() || 'global';
+        const category = cand.category === null || cand.category === undefined ? null : String(cand.category || '').trim() || null;
+        const valueHuman = String(cand.value_human || cand.valueHuman || '').trim();
+        const valueJson = cand.value_json && typeof cand.value_json === 'object' ? cand.value_json : {};
+
+        if (!key || !valueHuman) {
+          bot.answerCallbackQuery(query.id);
+          bot.sendMessage(chatId, 'Не получилось сохранить: некорректный кандидат.');
+          return;
+        }
+
+        const { externalId } = await prefsRepo.upsertPreference({
+          chatId,
+          scope,
+          category,
+          key,
+          valueJson,
+          valueHuman,
+          active: true,
+          source: 'postgres',
+        });
+
+        const syncHash = computePreferenceSyncHash({
+          externalId,
+          key,
+          scope,
+          category,
+          active: true,
+          valueHuman,
+          valueJson,
+        });
+
+        await prefsRepo.enqueueNotionSync({
+          kind: 'pref_page_upsert',
+          externalId,
+          payload: {
+            externalId,
+            chatId,
+            scope,
+            category,
+            key,
+            active: true,
+            valueHuman,
+            valueJson: typeof valueJson === 'string' ? valueJson : JSON.stringify(valueJson || {}),
+            syncHash,
+            lastSource: 'postgres',
+            updatedAt: new Date().toISOString(),
+          },
+          payloadHash: syncHash,
+        });
+
+        await suggestionsRepo.decideSuggestion({ id: suggestionId, chatId, status: 'accepted' });
+
+        bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, `Сохранил preference: ${key} - ${oneLinePreview(valueHuman, 120)}`);
         return;
       }
 

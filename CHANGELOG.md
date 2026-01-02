@@ -10,6 +10,27 @@ All notable changes to this project will be documented in this file.
   - Reminders worker now syncs memory both ways (Notion edits win) and pushes profile summaries.
   - Planner receives a short memory summary in context.
 
+- Chat memory (Postgres):
+  - Added `chat_messages` and `chat_summaries` tables (persistent dialog memory).
+  - Todo bot stores incoming user text and outgoing assistant messages (best-effort) when Postgres is enabled.
+  - Reminders worker periodically builds a short chat summary via LLM and purges old chat messages by TTL.
+  - Planner context now includes chat summary and recent chat messages (in addition to preferences).
+  - Bumped todo bot version to `v0.1.23` and reminders worker to `v0.1.1`.
+
+- Preference suggestions:
+  - Added `memory_suggestions` table for preference candidates (Save / Don't save UX).
+  - Added LLM preference extractor and inline buttons to save preferences to Postgres and enqueue Notion sync.
+  - Preference suggestions work for voice transcripts too (after STT).
+  - Fixed Notion sync so `pref_page_upsert` works when only Preferences DB is configured (Profiles DB is optional).
+  - Bumped todo bot version to `v0.1.26` and reminders worker to `v0.1.2`.
+
+- Ideas and Social resolve:
+  - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).
+  - Added last shown list references like "in the first idea" / "в первой идее" for update/archive flows.
+  - Idea update supports "add tag" semantics (merge) and `Project` field.
+  - Default AI model for todo bot is now `gpt-4.1` when `TG_AI_MODEL` is not set.
+  - Bumped todo bot version to `v0.1.25`.
+
 - Tasks delete UX (AI + voice):
   - Task resolve now matches RU voice to LAT titles (translit + local fuzzy fallback).
   - Multi-delete from one message is supported via confirm queue.

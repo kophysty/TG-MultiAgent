@@ -100,4 +100,30 @@
   - Подтверждение Deprecated всегда показывает название задачи и корректно продолжает очередь.
   - Bumped todo bot version to `v0.1.22`.
 
+## 2026-01-02
+
+- Chat memory:
+  - Добавлены таблицы `chat_messages` и `chat_summaries` (Postgres).
+  - Бот сохраняет входящие user сообщения и исходящие assistant сообщения (best-effort).
+  - Planner получает chat summary и последние сообщения как дополнительный контекст.
+  - Worker пересчитывает сводку чата через LLM и чистит `chat_messages` по TTL.
+  - Bumped todo bot version to `v0.1.23`.
+  - Bumped reminders worker version to `v0.1.1`.
+
+- Preference suggestions:
+  - Добавлена таблица `memory_suggestions` (Postgres).
+  - Добавлен LLM extractor, который предлагает сохранить preference кнопками (Сохранить/Не сохранять).
+  - При сохранении: upsert в Postgres preferences + enqueue `pref_page_upsert` в `notion_sync_queue`.
+  - Preference suggestions работают и для voice (после STT).
+  - Fix: синк в Notion для `pref_page_upsert` работает, даже если настроена только Preferences DB (Profiles DB опциональна).
+  - Bumped todo bot version to `v0.1.26`.
+  - Bumped reminders worker version to `v0.1.2`.
+
+- Ideas/Social resolve UX:
+  - Добавлен продвинутый fuzzy-resolve для Ideas и Social (RU voice -> LAT title, local fallback).
+  - Можно ссылаться на элементы из последнего списка фразами типа "в первой идее" или "во втором посте".
+  - Update Idea теперь поддерживает merge тегов ("добавь тег") и заполнение поля `Project`.
+  - Дефолтная модель для AI в todo bot теперь `gpt-4.1` (если `TG_AI_MODEL` не задан).
+  - Bumped todo bot version to `v0.1.25`.
+
 

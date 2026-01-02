@@ -33,6 +33,48 @@ Telegram агент, который работает с Notion как с пер�
 
 Docker Compose лежит в `infra/docker-compose.yml`.
 
+### Локальный Postgres (dev)
+
+Если ты поднимаешь Postgres через `infra/docker-compose.yml`, то по умолчанию будет:
+
+- host: `localhost`
+- port: `5432`
+- database: `tg_multiagent`
+- user: `tg_multiagent`
+- password: `tg_multiagent_dev`
+
+Важно: `localhost:5432` это не HTTP, поэтому в браузере ничего не откроется. Подключаться нужно через SQL клиент.
+
+Строка подключения для приложений (env) и для SQL клиентов:
+
+- `POSTGRES_URL=postgres://tg_multiagent:tg_multiagent_dev@localhost:5432/tg_multiagent`
+
+Примечание: внутри docker сети (из других контейнеров) host будет `postgres`, а не `localhost`.
+
+#### Быстрый доступ через docker exec (без GUI)
+
+Открыть psql:
+
+```bash
+docker exec -it tg-multiagent-postgres psql -U tg_multiagent -d tg_multiagent
+```
+
+Выполнить одну команду:
+
+```bash
+docker exec -i tg-multiagent-postgres psql -U tg_multiagent -d tg_multiagent -c "select now();"
+```
+
+#### GUI клиенты (DBeaver, pgAdmin)
+
+Подключайся по:
+
+- host: `localhost`
+- port: `5432`
+- database: `tg_multiagent`
+- user: `tg_multiagent`
+- password: `tg_multiagent_dev`
+
 ## TL;DR (что важно из Notion)
 
 - **Notion** - первоисточник и витрина (Tasks, Ideas, Documents), правки вносим сначала там.

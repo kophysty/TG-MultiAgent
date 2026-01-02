@@ -614,6 +614,113 @@ async function findTasksFuzzyEnhanced({ notionRepo, queryText, limit }) {
   return { tasks: picked, usedQueryText: String(queryText || '').trim(), source: 'local' };
 }
 
+function inferIndexFromText(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t) return null;
+
+  // Digits: "1", "№2", "номер 3", "id 4" (we keep it simple).
+  const m = t.match(/(?:^|[^\d])(?:№\s*)?(\d{1,2})(?:[^\d]|$)/);
+  if (m && m[1]) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 20) return n;
+  }
+
+  // RU ordinals
+  if (/(перв)/.test(t)) return 1;
+  if (/(втор)/.test(t)) return 2;
+  if (/(трет)/.test(t)) return 3;
+  if (/(четверт)/.test(t)) return 4;
+  if (/(пят)/.test(t)) return 5;
+  if (/(шест)/.test(t)) return 6;
+  if (/(седьм)/.test(t)) return 7;
+  if (/(восьм)/.test(t)) return 8;
+  if (/(девят)/.test(t)) return 9;
+  if (/(десят)/.test(t)) return 10;
+
+  return null;
+}
+
+async function findListFuzzyEnhanced({ listFn, queryText, limit }) {
+  const baseTries = buildQueryVariants(queryText);
+  const tries = [];
+  for (const q of baseTries) {
+    if (q && !tries.includes(q)) tries.push(q);
+    const tr = translitRuToLat(q);
+    if (tr && tr !== q && !tries.includes(tr)) tries.push(tr);
+  }
+
+  const seen = new Set();
+  let best = [];
+  let bestQuery = tries[0] || queryText;
+
+  for (const q of tries.slice(0, 8)) {
+    const res = await listFn({ queryText: q, limit });
+    const uniq = [];
+    for (const it of res || []) {
+      if (!it?.id) continue;
+      if (seen.has(it.id)) continue;
+      seen.add(it.id);
+      uniq.push(it);
+    }
+    if (uniq.length > best.length) {
+      best = uniq;
+      bestQuery = q;
+    }
+    if (best.length >= 2) break;
+  }
+
+  if (best.length) return { items: best, usedQueryText: bestQuery, source: 'notion' };
+
+  // Fallback: list last N items and do local fuzzy match.
+  let recent = [];
+  try {
+    recent = await listFn({ limit: 100 });
+  } catch {
+    recent = [];
+  }
+
+  const scored = [];
+  for (const it of recent || []) {
+    if (!it?.id) continue;
+    const title = String(it.title || '').trim();
+    if (!title) continue;
+    const score = scoreTaskTitleMatch({ query: queryText, title });
+    scored.push({ score, item: it });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const topScore = scored[0]?.score || 0;
+  if (topScore < 0.22) return { items: [], usedQueryText: String(queryText || '').trim(), source: 'local' };
+
+  const lim = Math.min(Math.max(1, Number(limit) || 20), 20);
+  const threshold = Math.max(0.28, topScore - 0.12);
+  const picked = scored.filter((x) => x.score >= threshold).slice(0, lim).map((x) => x.item);
+  return { items: picked, usedQueryText: String(queryText || '').trim(), source: 'local' };
+}
+
+async function findIdeasFuzzyEnhanced({ ideasRepo, queryText, limit }) {
+  return await findListFuzzyEnhanced({
+    listFn: ({ queryText: q, limit: lim }) => ideasRepo.listIdeas({ queryText: q || null, limit: lim ?? 20 }),
+    queryText,
+    limit,
+  });
+}
+
+async function findSocialPostsFuzzyEnhanced({ socialRepo, queryText, limit }) {
+  return await findListFuzzyEnhanced({
+    listFn: ({ queryText: q, limit: lim }) => socialRepo.listPosts({ queryText: q || null, limit: lim ?? 20 }),
+    queryText,
+    limit,
+  });
+}
+
+async function findJournalEntriesFuzzyEnhanced({ journalRepo, queryText, limit }) {
+  return await findListFuzzyEnhanced({
+    listFn: ({ queryText: q, limit: lim }) => journalRepo.listEntries({ queryText: q || null, limit: lim ?? 20 }),
+    queryText,
+    limit,
+  });
+}
+
 function normalizeCategoryInput(category) {
   const c = String(category || '').trim();
   if (!c) return null;
@@ -1122,6 +1229,10 @@ module.exports = {
   extractNotionErrorInfo,
   buildPickPlatformKeyboard,
   inferRequestedTaskActionFromText,
+  inferIndexFromText,
+  findIdeasFuzzyEnhanced,
+  findSocialPostsFuzzyEnhanced,
+  findJournalEntriesFuzzyEnhanced,
 };
 
 

@@ -29,8 +29,12 @@ const {
   buildPickTaskKeyboard,
   buildPickPlatformKeyboard,
   findTasksFuzzyEnhanced,
+  findIdeasFuzzyEnhanced,
+  findSocialPostsFuzzyEnhanced,
+  findJournalEntriesFuzzyEnhanced,
   buildMultiQueryCandidates,
   inferRequestedTaskActionFromText,
+  inferIndexFromText,
 } = require('./todo_bot_helpers');
 
 function createToolExecutor({
@@ -42,7 +46,11 @@ function createToolExecutor({
   tz,
   pendingToolActionByChatId,
   lastShownListByChatId,
+  lastShownIdeasListByChatId,
+  lastShownSocialListByChatId,
   renderAndRememberList,
+  renderAndRememberIdeasList,
+  renderAndRememberSocialList,
   renderAndRememberJournalList,
   resolveJournalPageIdFromLastShown,
 }) {
@@ -244,11 +252,15 @@ function createToolExecutor({
         const category = args?.category ? args.category : null;
         const limit = args?.limit ? Number(args.limit) : 15;
         const ideas = await ideasRepo.listIdeas({ category, status, queryText, limit });
-        const lines = ['Идеи:', ''];
-        for (const it of ideas.slice(0, 20)) {
-          lines.push(`- ${it.title}`);
-        }
-        bot.sendMessage(chatId, lines.join('\n'));
+        await renderAndRememberIdeasList({ chatId, ideas, title: 'Идеи:' });
+        return;
+      }
+
+      if (toolName === 'notion.find_ideas') {
+        const queryText = String(args?.queryText || '').trim();
+        const { items, source } = await findIdeasFuzzyEnhanced({ ideasRepo, queryText, limit: 20 });
+        const suffix = source === 'local' ? ' (локальный fuzzy)' : '';
+        await renderAndRememberIdeasList({ chatId, ideas: items, title: `Найдено по "${queryText}":${suffix}` });
         return;
       }
 
@@ -442,7 +454,7 @@ function createToolExecutor({
       }
 
       if (toolName === 'notion.update_idea') {
-        const { category: categoryOptions } = await ideasRepo.getOptions();
+        const { category: categoryOptions, tags: tagOptions, area: areaOptions, project: projectOptions } = await ideasRepo.getOptions();
         let normCategory = args?.category !== undefined ? args.category : undefined;
         if (normCategory !== undefined && normCategory !== null) {
           const norm = normalizeMultiOptionValue({ value: normCategory, options: categoryOptions, aliases: null });
@@ -454,15 +466,61 @@ function createToolExecutor({
           }
         }
 
+        // Tags: support "add tag" semantics (merge) via heuristic.
+        const wantsAddTag = /(добав|допол|ещ(е|ё)|плюс)\s+тег/i.test(String(userText || ''));
+        let normTags = args?.tags !== undefined ? args.tags : args?.tag !== undefined ? args.tag : undefined;
+        if (normTags !== undefined && normTags !== null) {
+          const norm = normalizeMultiOptionValue({ value: normTags, options: tagOptions, aliases: null });
+          if (norm.unknown.length) {
+            // allow creating new tag options only when explicitly asked to add tags
+            if (wantsAddTag && typeof ideasRepo.ensureTagsOptions === 'function') {
+              const ensured = await ideasRepo.ensureTagsOptions({ desiredNames: norm.unknown });
+              const merged = Array.from(new Set([...(norm.value || []), ...(ensured.resolved || [])]));
+              normTags = merged;
+            } else {
+              normTags = undefined;
+            }
+          } else {
+            normTags = Array.isArray(normTags) ? norm.value : norm.value[0] ? [norm.value[0]] : [];
+          }
+        }
+
+        // Area: accept args.area if provided, best-effort match (options are dynamic).
+        let normArea = args?.area !== undefined ? args.area : undefined;
+        if (normArea !== undefined && normArea !== null) {
+          const norm = pickBestOptionMatch({ input: normArea, options: areaOptions, aliases: null });
+          normArea = norm.value || String(normArea || '').trim() || undefined;
+        }
+
+        // Project: accept args.project, match existing options or create if needed (explicit "проект").
+        const wantsProject = /(проект)/i.test(String(userText || ''));
+        let normProject = args?.project !== undefined ? args.project : undefined;
+        if (normProject !== undefined && normProject !== null) {
+          const norm = pickBestOptionMatch({ input: normProject, options: projectOptions, aliases: null });
+          if (!norm.value) {
+            if (wantsProject && typeof ideasRepo.ensureProjectOptions === 'function') {
+              const ensured = await ideasRepo.ensureProjectOptions({ desiredNames: [String(normProject)] });
+              normProject = ensured.resolved?.[0] || String(normProject || '').trim() || undefined;
+            } else {
+              normProject = undefined;
+            }
+          } else {
+            normProject = norm.value;
+          }
+        }
+
         const patch = {
           title: args?.title ? String(args.title) : undefined,
           status: args?.status ? String(args.status) : undefined,
           priority: args?.priority ? String(args.priority) : undefined,
           category: normCategory,
+          tags: normTags,
+          area: normArea !== undefined ? (normArea === null ? null : String(normArea)) : undefined,
+          project: normProject !== undefined ? (normProject === null ? null : String(normProject)) : undefined,
           source: args?.source !== undefined ? String(args.source) : undefined,
         };
         // resolve pageId via shared logic below
-        args = { ...args, _patch: patch };
+        args = { ...args, _patch: patch, _mergeTags: Boolean(wantsAddTag) };
         toolName = 'notion.update_idea_resolve';
       }
 
@@ -492,12 +550,15 @@ function createToolExecutor({
         }
 
         const posts = await socialRepo.listPosts({ platform: normPlatform.value, status, queryText, limit });
-        const lines = ['Посты (Social Media Planner):', ''];
-        for (const it of posts.slice(0, 20)) {
-          const plats = it.platform?.length ? ` [${it.platform.join(', ')}]` : '';
-          lines.push(`- ${it.title}${plats}`);
-        }
-        bot.sendMessage(chatId, lines.join('\n'));
+        await renderAndRememberSocialList({ chatId, posts, title: 'Посты (Social Media Planner):' });
+        return;
+      }
+
+      if (toolName === 'notion.find_social_posts') {
+        const queryText = String(args?.queryText || '').trim();
+        const { items, source } = await findSocialPostsFuzzyEnhanced({ socialRepo, queryText, limit: 20 });
+        const suffix = source === 'local' ? ' (локальный fuzzy)' : '';
+        await renderAndRememberSocialList({ chatId, posts: items, title: `Найдено по "${queryText}":${suffix}` });
         return;
       }
 
@@ -668,9 +729,15 @@ function createToolExecutor({
       }
 
       if (toolName === 'notion.find_journal_entries') {
-        // alias to list with queryText
+        if (!journalRepo) {
+          bot.sendMessage(chatId, 'Journal база не подключена. Добавь NOTION_JOURNAL_DB_ID.');
+          return;
+        }
+
         const queryText = String(args?.queryText || '').trim();
-        await executeToolPlan({ chatId, from, toolName: 'notion.list_journal_entries', args: { ...args, queryText, limit: args?.limit ?? 15 }, userText });
+        const { items, source } = await findJournalEntriesFuzzyEnhanced({ journalRepo, queryText, limit: 20 });
+        const suffix = source === 'local' ? ' (локальный fuzzy)' : '';
+        await renderAndRememberJournalList({ chatId, entries: items || [], title: `Найдено по "${queryText}":${suffix}` });
         return;
       }
 
@@ -834,7 +901,12 @@ function createToolExecutor({
         if (pageId) {
           const actionId = makeId(`${chatId}:${Date.now()}:${toolName}:${pageId}`);
           if (toolName === 'notion.update_idea_resolve') {
-            pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId, patch: args._patch }, createdAt: Date.now() });
+            pendingToolActionByChatId.set(chatId, {
+              id: actionId,
+              kind: 'notion.update_idea',
+              payload: { pageId, patch: args._patch, merge: args?._mergeTags ? { tags: true } : null },
+              createdAt: Date.now(),
+            });
             bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
             return;
           }
@@ -843,15 +915,36 @@ function createToolExecutor({
           return;
         }
 
+        // Try resolving by index from last shown ideas list.
+        const idx = args?.taskIndex ? Number(args.taskIndex) : inferIndexFromText(userText);
+        const lastShownIdeas = lastShownIdeasListByChatId ? lastShownIdeasListByChatId.get(chatId) || [] : [];
+        if (!pageId && idx && lastShownIdeas.length) {
+          const found = lastShownIdeas.find((x) => x.index === idx);
+          if (found?.id) {
+            args = { ...args, pageId: found.id };
+            return await executeToolPlan({ chatId, from, toolName, args, userText });
+          }
+        }
+
         const queryText = String(args?.queryText || '').trim();
-        const candidates = (await ideasRepo.listIdeas({ queryText, limit: 10 })) || [];
+        const fuzzy = queryText ? await findIdeasFuzzyEnhanced({ ideasRepo, queryText, limit: 10 }) : { items: [] };
+        const candidates = (fuzzy.items || []).length
+          ? fuzzy.items
+          : queryText
+            ? []
+            : (await ideasRepo.listIdeas({ queryText: null, limit: 10 })) || [];
         if (candidates.length === 1) {
           args = { ...args, pageId: candidates[0].id };
           return await executeToolPlan({ chatId, from, toolName, args, userText });
         }
         if (candidates.length > 1) {
           const items = candidates.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
-          pendingToolActionByChatId.set(chatId, { id: null, kind: toolName === 'notion.update_idea_resolve' ? 'notion.update_idea' : 'notion.archive_idea', payload: { _candidates: items, patch: args._patch }, createdAt: Date.now() });
+          pendingToolActionByChatId.set(chatId, {
+            id: null,
+            kind: toolName === 'notion.update_idea_resolve' ? 'notion.update_idea' : 'notion.archive_idea',
+            payload: { _candidates: items, patch: args._patch, merge: args?._mergeTags ? { tags: true } : null },
+            createdAt: Date.now(),
+          });
           bot.sendMessage(chatId, 'Нашел несколько идей. Выбери:', buildPickTaskKeyboard({ items }));
           return;
         }
@@ -873,8 +966,20 @@ function createToolExecutor({
           return;
         }
 
+        // Try resolving by index from last shown social list.
+        const idx = args?.taskIndex ? Number(args.taskIndex) : inferIndexFromText(userText);
+        const lastShownSocial = lastShownSocialListByChatId ? lastShownSocialListByChatId.get(chatId) || [] : [];
+        if (!pageId && idx && lastShownSocial.length) {
+          const found = lastShownSocial.find((x) => x.index === idx);
+          if (found?.id) {
+            args = { ...args, pageId: found.id };
+            return await executeToolPlan({ chatId, from, toolName, args, userText });
+          }
+        }
+
         const queryText = String(args?.queryText || '').trim();
-        const candidates = (await socialRepo.listPosts({ queryText, limit: 10 })) || [];
+        const fuzzy = queryText ? await findSocialPostsFuzzyEnhanced({ socialRepo, queryText, limit: 10 }) : { items: [] };
+        const candidates = fuzzy.items || [];
         if (candidates.length === 1) {
           args = { ...args, pageId: candidates[0].id };
           return await executeToolPlan({ chatId, from, toolName, args, userText });
@@ -925,7 +1030,9 @@ function createToolExecutor({
           args = { ...args, pageId: resolvedFromLastShown };
           return await executeToolPlan({ chatId, from, toolName, args, userText });
         }
-        const candidates = (await journalRepo.listEntries({ queryText, limit: 10 })) || [];
+        const candidates = queryText
+          ? (await findJournalEntriesFuzzyEnhanced({ journalRepo, queryText, limit: 10 })).items || []
+          : (await journalRepo.listEntries({ queryText, limit: 10 })) || [];
         if (!queryText && candidates.length) {
           // If user did not specify which entry, default to the most recent one.
           args = { ...args, pageId: candidates[0].id };
@@ -1057,7 +1164,12 @@ function createToolExecutor({
 
       if (toolName === 'notion.update_idea_resolve') {
         const actionId = makeId(`${chatId}:${Date.now()}:notion.update_idea:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_idea', payload: { pageId: resolvedPageId, patch: args._patch }, createdAt: Date.now() });
+        pendingToolActionByChatId.set(chatId, {
+          id: actionId,
+          kind: 'notion.update_idea',
+          payload: { pageId: resolvedPageId, patch: args._patch, merge: args?._mergeTags ? { tags: true } : null },
+          createdAt: Date.now(),
+        });
         bot.sendMessage(chatId, 'Применить изменения к идее?', buildToolConfirmKeyboard({ actionId }));
         return;
       }

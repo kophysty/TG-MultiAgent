@@ -48,12 +48,73 @@
 - `infra/db/migrations/003_preferences.sql`
 - `infra/db/migrations/004_preferences_sync.sql`
 - `infra/db/migrations/005_notion_sync_queue.sql`
+- `infra/db/migrations/006_chat_memory.sql`
 
 Таблицы:
 
 - `preferences` - текущие предпочтения (source of truth для prompt)
 - `preferences_sync` - метаданные синка (pageId, last hashes, last seen notion edit time)
 - `notion_sync_queue` - очередь write-through апдейтов в Notion с ретраями
+- `chat_messages` - сообщения чата (user и assistant), уже sanitized
+- `chat_summaries` - короткая сводка чата для восстановления контекста (обновляется воркером)
+
+## Chat memory (диалоговая память)
+
+### Что сохраняем
+
+- В `apps/todo_bot`:
+  - входящие текстовые сообщения пользователя пишем в `chat_messages` (включая команды)
+  - исходящие сообщения бота пишем в `chat_messages` через proxy вокруг `bot.sendMessage`
+  - voice: после STT сохраняем transcript как user сообщение (best-effort)
+
+Текст перед записью проходит sanitize для storage: удаляем токены и ключи (Telegram, Notion, OpenAI, Bearer).
+
+### Chat summary
+
+- В `apps/reminders_worker` периодически запускается `chatSummaryTick`:
+  - выбирает чаты, где появились новые сообщения
+  - обновляет `chat_summaries.summary`
+  - чистит старые `chat_messages` по TTL
+
+### Инъекция в AI planner
+
+Перед вызовом `planAgentAction` бот подмешивает:
+
+- preferences summary (как раньше)
+- chat summary (если есть)
+- последние N сообщений чата (короткий one-line формат)
+
+### Переменные окружения (chat memory)
+
+- `TG_CHAT_MEMORY_ENABLED` - включить/выключить chat memory, default true
+- `TG_CHAT_MEMORY_LAST_N` - сколько последних сообщений читать, default 50
+- `TG_CHAT_MEMORY_TTL_DAYS` - TTL для `chat_messages`, default 30
+
+### Переменные окружения (chat summary)
+
+- `TG_CHAT_SUMMARY_ENABLED` - включить/выключить chat summary tick, default true
+- `TG_CHAT_SUMMARY_SECONDS` - период summary tick, default 900
+- `TG_CHAT_SUMMARY_BATCH` - сколько чатов обрабатывать за тик, default 3
+- `TG_CHAT_SUMMARY_MODEL` - модель для summary, default `gpt-4.1-mini`
+
+## Preference suggestions (предложение сохранить preference)
+
+Иногда пользователь пишет устойчивые предпочтения не в явном виде "запомни". В этом случае бот может предложить сохранить preference кнопками.
+
+### Как работает
+
+- Бот запускает preference extractor (LLM) по эвристикам (не на каждое сообщение).
+- Если найден кандидат с достаточной уверенностью, бот создает запись в Postgres `memory_suggestions` и показывает inline кнопки:
+  - `Сохранить`
+  - `Не сохранять`
+- При `Сохранить`:
+  - preference сохраняется в Postgres `preferences`
+  - создается задача в `notion_sync_queue` вида `pref_page_upsert`, чтобы воркер отправил preference в Notion UI
+
+### Переменные окружения
+
+- `TG_PREF_EXTRACTOR_ENABLED` - включить/выключить extractor, default true
+- `TG_PREF_EXTRACTOR_MODEL` - модель для extractor, default `gpt-4.1-mini`
 
 ## Воркер: синхронизация
 

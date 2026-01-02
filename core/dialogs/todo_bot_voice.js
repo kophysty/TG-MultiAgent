@@ -31,9 +31,14 @@ async function handleVoiceMessage({
   tz,
   notionCategories,
   lastShownListByChatId,
+  lastShownIdeasListByChatId = null,
+  lastShownSocialListByChatId = null,
   executeToolPlan,
   aiDraftByChatId,
   aiDraftById,
+  getPlannerContext = null, // async () => ({ memorySummary, chatSummary, chatHistory, workContext })
+  appendUserTextToChatMemory = null, // async ({ text, tgMessageId })
+  maybeSuggestPreferenceFromText = null, // async ({ chatId, userText, sourceMessageId })
 }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -96,20 +101,51 @@ async function handleVoiceMessage({
 
     transcriptPreview = oneLinePreview(transcript, 90);
 
+    // Best-effort: store voice transcript as a user message in chat memory.
+    if (typeof appendUserTextToChatMemory === 'function') {
+      try {
+        await appendUserTextToChatMemory({ text: transcript, tgMessageId: msg?.message_id || null });
+      } catch {
+        // ignore
+      }
+    }
+
+    // Best-effort: run preference suggestion on voice transcript too.
+    if (typeof maybeSuggestPreferenceFromText === 'function') {
+      Promise.resolve()
+        .then(() =>
+          maybeSuggestPreferenceFromText({
+            chatId,
+            userText: String(transcript || ''),
+            sourceMessageId: msg?.message_id || null,
+          })
+        )
+        .catch(() => {});
+    }
+
     if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: формирую задачу...' });
 
     // Voice transcript should go through the same planner->tools path as text messages.
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
     const lastShown = lastShownListByChatId.get(chatId) || [];
+    const lastShownIdeas = lastShownIdeasListByChatId ? lastShownIdeasListByChatId.get(chatId) || [] : [];
+    const lastShownSocial = lastShownSocialListByChatId ? lastShownSocialListByChatId.get(chatId) || [] : [];
     try {
+      const ctx = typeof getPlannerContext === 'function' ? await getPlannerContext() : {};
       const plan = await planAgentAction({
         apiKey,
         model: aiModel,
         userText: transcript,
         allowedCategories,
         lastShownList: lastShown,
+        lastShownIdeasList: lastShownIdeas,
+        lastShownSocialList: lastShownSocial,
         tz,
         nowIso: new Date().toISOString(),
+        memorySummary: ctx?.memorySummary || null,
+        chatSummary: ctx?.chatSummary || null,
+        chatHistory: ctx?.chatHistory || null,
+        workContext: ctx?.workContext || null,
       });
 
       if (plan.type === 'chat') {

@@ -4,9 +4,11 @@ const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
 const { RemindersRepo } = require('../../../core/connectors/postgres/reminders_repo');
 const { PreferencesRepo } = require('../../../core/connectors/postgres/preferences_repo');
+const { ChatMemoryRepo } = require('../../../core/connectors/postgres/chat_memory_repo');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
 const { NotionPreferencesRepo } = require('../../../core/connectors/notion/preferences_repo');
-const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
+const { sanitizeErrorForLog, sanitizeForLog } = require('../../../core/runtime/log_sanitize');
+const { summarizeChat } = require('../../../core/ai/chat_summarizer');
 const crypto = require('crypto');
 
 function parseHhMm(text, fallbackH = 11, fallbackM = 0) {
@@ -213,14 +215,12 @@ async function main() {
 
   const repo = new RemindersRepo({ pool: pgPool });
   const prefsRepo = new PreferencesRepo({ pool: pgPool });
+  const chatMemoryRepo = new ChatMemoryRepo({ pool: pgPool });
   const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
 
   const preferencesDbId = process.env.NOTION_PREFERENCES_DB_ID || null;
   const profilesDbId = process.env.NOTION_PREFERENCE_PROFILES_DB_ID || null;
-  const notionPrefsRepo =
-    preferencesDbId && profilesDbId
-      ? new NotionPreferencesRepo({ notionToken, preferencesDbId, profilesDbId })
-      : null;
+  const notionPrefsRepo = preferencesDbId ? new NotionPreferencesRepo({ notionToken, preferencesDbId, profilesDbId }) : null;
 
   const botByMode = new Map();
   if (tokenTests) botByMode.set('tests', new TelegramBot(tokenTests, { polling: false, request: { timeout: 60_000 } }));
@@ -230,6 +230,59 @@ async function main() {
   console.log(
     `Reminders worker started. tz=${tz} pollSeconds=${pollSeconds} db=${databaseId} modeDefault=${mode} memorySyncSeconds=${memorySyncSeconds}`
   );
+
+  function isChatSummaryEnabled() {
+    const v = String(process.env.TG_CHAT_SUMMARY_ENABLED || '').trim().toLowerCase();
+    if (!v) return true;
+    return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+  }
+
+  async function chatSummaryTick() {
+    if (!isChatSummaryEnabled()) return;
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return;
+
+    // If tables are missing, disable silently.
+    try {
+      await pgPool.query('SELECT 1 FROM chat_messages LIMIT 1');
+    } catch {
+      return;
+    }
+
+    const model = process.env.TG_CHAT_SUMMARY_MODEL || process.env.TG_AI_MODEL || 'gpt-4.1-mini';
+    const batch = Math.min(10, Math.max(1, Number(process.env.TG_CHAT_SUMMARY_BATCH || 3)));
+    const lastN = Math.min(200, Math.max(10, Number(process.env.TG_CHAT_MEMORY_LAST_N || 50)));
+
+    const candidates = await chatMemoryRepo.listChatsNeedingSummary({ limit: batch });
+    if (!candidates.length) return;
+
+    for (const c of candidates) {
+      const chatId = Number(c.chat_id);
+      const lastMessageId = Number(c.last_message_id);
+      if (!Number.isFinite(chatId) || !Number.isFinite(lastMessageId)) continue;
+
+      try {
+        const [sumRow, rows] = await Promise.all([
+          chatMemoryRepo.getSummary({ chatId }),
+          chatMemoryRepo.listLastN({ chatId, limit: lastN }),
+        ]);
+        const priorSummary = sumRow?.summary ? String(sumRow.summary) : '';
+        const messages = (rows || []).map((r) => ({ role: r.role, text: r.text }));
+        const res = await summarizeChat({ apiKey, model, priorSummary, messages });
+        await chatMemoryRepo.upsertSummary({ chatId, summary: res.summary, lastMessageId });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('chatSummaryTick error:', sanitizeErrorForLog(e), { chatId: sanitizeForLog(chatId) });
+      }
+    }
+
+    const ttlDays = Math.min(3650, Math.max(1, Number(process.env.TG_CHAT_MEMORY_TTL_DAYS || 30)));
+    try {
+      await chatMemoryRepo.purgeOldMessages({ ttlDays });
+    } catch {
+      // ignore
+    }
+  }
 
   async function tick() {
     const now = new Date();
@@ -365,6 +418,11 @@ async function main() {
             });
           }
         } else if (kind === 'profile_upsert') {
+          if (!profilesDbId) {
+            // Profiles DB is optional. Drop profile jobs if it is not configured.
+            await prefsRepo.deleteQueueItem({ id: it.id });
+            continue;
+          }
           await notionPrefsRepo.upsertProfilePage(payload);
         }
 
@@ -435,21 +493,25 @@ async function main() {
     }
 
     // 3) Update per-chat profile summary in Notion (write-through queue).
-    for (const chatId of touchedChats) {
-      const prefs = await prefsRepo.listPreferencesForChat({ chatId, activeOnly: true });
-      const summary = buildPreferencesSummary(prefs);
-      await prefsRepo.enqueueNotionSync({
-        kind: 'profile_upsert',
-        externalId: `profile:${chatId}`,
-        payload: { chatId, externalId: `profile:${chatId}`, summary, updatedAt: new Date().toISOString() },
-        payloadHash: md5(summary),
-      });
+    if (profilesDbId) {
+      for (const chatId of touchedChats) {
+        const prefs = await prefsRepo.listPreferencesForChat({ chatId, activeOnly: true });
+        const summary = buildPreferencesSummary(prefs);
+        await prefsRepo.enqueueNotionSync({
+          kind: 'profile_upsert',
+          externalId: `profile:${chatId}`,
+          payload: { chatId, externalId: `profile:${chatId}`, summary, updatedAt: new Date().toISOString() },
+          payloadHash: md5(summary),
+        });
+      }
     }
   }
 
   // eslint-disable-next-line no-console
   console.log('Reminders worker loop started.');
   let nextMemoryRunAt = 0;
+  let nextChatSummaryRunAt = 0;
+  const chatSummarySeconds = Math.max(60, Number(process.env.TG_CHAT_SUMMARY_SECONDS || 900));
   // Simple polling loop
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -459,6 +521,10 @@ async function main() {
       if (nowMs >= nextMemoryRunAt) {
         await memoryTick();
         nextMemoryRunAt = nowMs + memorySyncSeconds * 1000;
+      }
+      if (nowMs >= nextChatSummaryRunAt) {
+        await chatSummaryTick();
+        nextChatSummaryRunAt = nowMs + chatSummarySeconds * 1000;
       }
     } catch (e) {
       // eslint-disable-next-line no-console
