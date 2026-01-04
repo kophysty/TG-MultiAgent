@@ -22,3 +22,4 @@ CREATE INDEX IF NOT EXISTS idx_memory_suggestions_chat_created
   ON memory_suggestions (chat_id, created_at DESC);
 
 
+

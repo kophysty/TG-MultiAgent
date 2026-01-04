@@ -84,3 +84,4 @@ Date: 2026-01-02
 - Observability: event_log + trace_id + diag bundle.
 
 
+

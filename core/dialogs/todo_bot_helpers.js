@@ -237,17 +237,229 @@ function inferListHintsFromText(userText) {
     doneMode = hasIncludeWords ? 'include' : 'only';
   }
 
-  // "today" list intent: due today + inbox (alias).
-  // Prefer "на сегодня" phrasing to avoid collision with "Today=Inbox" alias.
+  // Preset hints:
+  // - today: special behavior (today + Inbox alias), but tag may still be present (e.g. "рабочие задачи на сегодня")
+  // - tomorrow / day_after_tomorrow: plain dueDate filter
+  // Order matters: "послезавтра" contains "завтра".
+  let preset = null;
   const isTodayPreset = /(на\s+сегодня)/.test(t) || /(сегодняшн)/.test(t) || /(задач(и|а)\s+на\s+сегодня)/.test(t);
-  if (isTodayPreset) return { preset: 'today', tag: null, doneMode };
+  const isDayAfterTomorrowPreset =
+    /(на\s+послезавтра)/.test(t) ||
+    /(послезавтра)/.test(t) ||
+    /(day\s+after\s+tomorrow)/.test(t);
+  const isTomorrowPreset =
+    /(на\s+завтра)/.test(t) ||
+    /(завтрашн)/.test(t) ||
+    /(задач(и|а)\s+на\s+завтра)/.test(t) ||
+    /(tomorrow)/.test(t);
+  if (isTodayPreset) preset = 'today';
+  else if (isDayAfterTomorrowPreset) preset = 'day_after_tomorrow';
+  else if (isTomorrowPreset) preset = 'tomorrow';
 
   // Category synonyms (RU -> Notion Tag)
-  if (/(инбокс)/.test(t) || /(входящ)/.test(t) || /(^|\W)today($|\W)/.test(t)) return { preset: null, tag: 'Inbox', doneMode };
-  if (/(домашн)/.test(t) || /(дом)/.test(t)) return { preset: null, tag: 'Home', doneMode };
-  if (/(рабоч)/.test(t) || /(работа)/.test(t)) return { preset: null, tag: 'Work', doneMode };
+  let tag = null;
+  if (/(инбокс)/.test(t) || /(входящ)/.test(t) || /(^|\W)today($|\W)/.test(t)) tag = 'Inbox';
+  else if (/(домашн)/.test(t) || /(дом)/.test(t)) tag = 'Home';
+  else if (/(рабоч)/.test(t) || /(работа)/.test(t)) tag = 'Work';
 
-  return { preset: null, tag: null, doneMode };
+  return { preset, tag, doneMode };
+}
+
+function inferListDueDateFromText({ userText, tz }) {
+  const t = String(userText || '').trim().toLowerCase();
+  if (!t) return null;
+
+  // First: reuse base inference for today/tomorrow/poslezavtra and explicit numeric formats.
+  const direct = inferDateFromText({ userText, tz });
+  if (direct) return direct;
+
+  // Month names (RU) - match by stem.
+  const months = [
+    [/январ/i, 1],
+    [/феврал/i, 2],
+    [/март/i, 3],
+    [/апрел/i, 4],
+    [/ма[йя]/i, 5],
+    [/июн/i, 6],
+    [/июл/i, 7],
+    [/август/i, 8],
+    [/сентябр/i, 9],
+    [/октябр/i, 10],
+    [/ноябр/i, 11],
+    [/декабр/i, 12],
+  ];
+
+  const nowYmd = yyyyMmDdInTz({ tz });
+  const [nowY, nowM, nowD] = nowYmd.split('-').map((x) => Number(x));
+  if (![nowY, nowM, nowD].every((x) => Number.isFinite(x))) return null;
+
+  // Helper: pad 2
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  // 1) Numeric day-of-month patterns: "на 8", "на 8-е", "на 8 число", but avoid times like "на 15:00"
+  let day = null;
+  let month = null;
+  let year = null;
+
+  const num = t.match(/(?:^|\s)на\s+(\d{1,2})(?!\s*[:.]\s*\d{2})(?:\s*[-–]?\s*(?:е|ое|го|ого))?(?:\s+(?:числ(о|а)|день|дня))?/i);
+  if (num && num[1]) {
+    const n = Number(num[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 31) day = n;
+  }
+
+  // 2) RU ordinal words: "на восьмое", "на двадцать первое"
+  if (!day) {
+    const ord = [
+      [/перв/i, 1],
+      [/втор/i, 2],
+      [/трет/i, 3],
+      [/четверт/i, 4],
+      [/пят/i, 5],
+      [/шест/i, 6],
+      [/седьм/i, 7],
+      [/восьм/i, 8],
+      [/девят/i, 9],
+      [/десят/i, 10],
+      [/одиннадцат/i, 11],
+      [/двенадцат/i, 12],
+      [/тринадцат/i, 13],
+      [/четырнадцат/i, 14],
+      [/пятнадцат/i, 15],
+      [/шестнадцат/i, 16],
+      [/семнадцат/i, 17],
+      [/восемнадцат/i, 18],
+      [/девятнадцат/i, 19],
+      [/двадцат/i, 20],
+      [/двадцать\s+перв/i, 21],
+      [/двадцать\s+втор/i, 22],
+      [/двадцать\s+трет/i, 23],
+      [/двадцать\s+четверт/i, 24],
+      [/двадцать\s+пят/i, 25],
+      [/двадцать\s+шест/i, 26],
+      [/двадцать\s+седьм/i, 27],
+      [/двадцать\s+восьм/i, 28],
+      [/двадцать\s+девят/i, 29],
+      [/тридцат/i, 30],
+      [/тридцать\s+перв/i, 31],
+    ];
+
+    // Only consider ordinals if the phrase looks like a date request.
+    if (/(?:^|\s)на\s+/.test(t)) {
+      for (const [re, d] of ord) {
+        if (re.test(t)) {
+          day = d;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!day) return null;
+
+  // Month inference if user mentioned a month.
+  for (const [re, m] of months) {
+    if (re.test(t)) {
+      month = m;
+      break;
+    }
+  }
+
+  // Year explicit: "на 8 января 2026"
+  const y = t.match(/(?:^|\s)(20\d{2})(?:\s|$)/);
+  if (y && y[1]) year = Number(y[1]);
+
+  let finalY = Number.isFinite(year) ? year : nowY;
+  let finalM = Number.isFinite(month) ? month : nowM;
+  let finalD = day;
+
+  if (!Number.isFinite(year)) {
+    if (Number.isFinite(month)) {
+      // If month specified but date already passed this year, shift to next year.
+      if (finalM < nowM || (finalM === nowM && finalD <= nowD)) finalY = nowY + 1;
+    } else {
+      // No month specified: choose next occurrence (this month if in future, else next month).
+      if (finalD <= nowD) {
+        finalM = nowM + 1;
+        if (finalM > 12) {
+          finalM = 1;
+          finalY = nowY + 1;
+        }
+      }
+    }
+  }
+
+  // Validate day for month
+  const maxDay = new Date(Date.UTC(finalY, finalM, 0)).getUTCDate();
+  if (!Number.isFinite(maxDay) || finalD > maxDay) return null;
+
+  return `${finalY}-${pad2(finalM)}-${pad2(finalD)}`;
+}
+
+function inferSocialWeekRangeFromText({ userText, tz }) {
+  const t = String(userText || '').trim().toLowerCase();
+  if (!t) return null;
+
+  // Phrases: "на этой неделе", "до конца недели", "в течение этой недели"
+  const isThisWeek =
+    /(на\s+эт(ой|у)\s+недел(е|ю))/i.test(t) ||
+    /(на\s+текущ(ей|ую)\s+недел(е|ю))/i.test(t) ||
+    /(до\s+конца\s+недел)/i.test(t) ||
+    /(в\s+течени(е|и)\s+эт(ой|у)\s+недел)/i.test(t) ||
+    /(this\s+week)/i.test(t);
+  if (!isThisWeek) return null;
+
+  const today = yyyyMmDdInTz({ tz });
+  const m = String(today).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const weekday = new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); // 0..6, Sun..Sat
+  // We consider week starting Monday; dateBefore is next Monday (exclusive).
+  let daysToNextMonday = (8 - weekday) % 7;
+  if (daysToNextMonday === 0) daysToNextMonday = 7;
+  const dateBefore = addDaysToYyyyMmDd(today, daysToNextMonday);
+  return { dateOnOrAfter: today, dateBefore };
+}
+
+function inferTasksWeekRangeFromText({ userText, tz }) {
+  const t = String(userText || '').trim().toLowerCase();
+  if (!t) return null;
+
+  const isThisWeek =
+    /(на\s+эт(ой|у)\s+недел(е|ю))/i.test(t) ||
+    /(на\s+текущ(ей|ую)\s+недел(е|ю))/i.test(t) ||
+    /(до\s+конца\s+недел)/i.test(t) ||
+    /(в\s+течени(е|и)\s+эт(ой|у)\s+недел)/i.test(t) ||
+    /(this\s+week)/i.test(t);
+
+  const isNextWeek =
+    /(на\s+следующ(ей|ую)\s+недел(е|ю))/i.test(t) ||
+    /(следующ(ая|ую|ей)\s+недел(я|е|ю))/i.test(t) ||
+    /(next\s+week)/i.test(t);
+
+  if (!isThisWeek && !isNextWeek) return null;
+
+  const today = yyyyMmDdInTz({ tz });
+  const m = String(today).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const weekday = new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); // 0..6, Sun..Sat
+
+  // Week starts Monday; compute next Monday (exclusive end for "this week").
+  let daysToNextMonday = (8 - weekday) % 7;
+  if (daysToNextMonday === 0) daysToNextMonday = 7;
+  const nextMonday = addDaysToYyyyMmDd(today, daysToNextMonday);
+  if (!nextMonday) return null;
+
+  if (isNextWeek) {
+    const mondayAfterNext = addDaysToYyyyMmDd(nextMonday, 7);
+    return { kind: 'next_week', dateOnOrAfter: nextMonday, dateBefore: mondayAfterNext };
+  }
+
+  return { kind: 'this_week', dateOnOrAfter: today, dateBefore: nextMonday };
 }
 
 function buildQueryVariants(queryText) {
@@ -1190,6 +1402,9 @@ module.exports = {
   inferDueDateFromUserText,
   addDaysToYyyyMmDd,
   inferListHintsFromText,
+  inferListDueDateFromText,
+  inferSocialWeekRangeFromText,
+  inferTasksWeekRangeFromText,
   buildQueryVariants,
   findTasksFuzzy,
   findTasksFuzzyEnhanced,

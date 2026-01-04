@@ -31,7 +31,7 @@ class NotionSocialRepo {
     return { platform, contentType, status };
   }
 
-  async listPosts({ platform, status, dateOnOrAfter, dateBefore, queryText, limit = 20 } = {}) {
+  async listPosts({ platform, status, excludeStatuses = null, requireDate = false, dateOnOrAfter, dateBefore, queryText, limit = 20 } = {}) {
     const payload = {
       sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
       page_size: Math.min(Math.max(1, Number(limit) || 20), 100),
@@ -48,6 +48,15 @@ class NotionSocialRepo {
     }
     if (status) {
       filters.push({ property: 'Status', status: { equals: status } });
+    }
+    const excludeArr = Array.isArray(excludeStatuses) ? excludeStatuses.filter(Boolean) : [];
+    for (const s of excludeArr) {
+      // Notion status filter supports does_not_equal (same as select).
+      filters.push({ property: 'Status', status: { does_not_equal: String(s) } });
+    }
+    if (requireDate) {
+      // Exclude drafts without a Post date for "schedule" style list queries.
+      filters.push({ property: 'Post date', date: { is_not_empty: true } });
     }
     if (dateOnOrAfter || dateBefore) {
       const date = {};

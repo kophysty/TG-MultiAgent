@@ -14,6 +14,7 @@ const {
   pickBestOptionMatch,
   normalizeDueDateInput,
   inferDueDateFromUserText,
+  inferListDueDateFromText,
   clampRating1to5,
   hasNonEmptyOptionInput,
   inferMoodEnergyFromText,
@@ -35,6 +36,8 @@ const {
   buildMultiQueryCandidates,
   inferRequestedTaskActionFromText,
   inferIndexFromText,
+  inferSocialWeekRangeFromText,
+  inferTasksWeekRangeFromText,
 } = require('./todo_bot_helpers');
 
 function createToolExecutor({
@@ -81,26 +84,82 @@ function createToolExecutor({
         let dueDate = args?.dueDate ? String(args.dueDate).trim() : null;
         const queryText = args?.queryText ? String(args.queryText) : null;
 
-        if (dueDate && (dueDate.toLowerCase() === 'today' || dueDate.toLowerCase() === 'сегодня')) {
-          dueDate = yyyyMmDdInTz({ tz });
+        // Week range inference (this week / next week) for list queries.
+        const weekHint = inferTasksWeekRangeFromText({ userText, tz });
+        let dueDateOnOrAfter = args?.dueDateOnOrAfter ? String(args.dueDateOnOrAfter).trim() : null;
+        let dueDateBefore = args?.dueDateBefore ? String(args.dueDateBefore).trim() : null;
+        const weekKind = weekHint?.kind || null;
+        if (!dueDateOnOrAfter && !dueDateBefore && weekHint?.dateOnOrAfter && weekHint?.dateBefore) {
+          dueDateOnOrAfter = weekHint.dateOnOrAfter;
+          dueDateBefore = weekHint.dateBefore;
+        }
+
+        if (dueDate) {
+          const low = dueDate.toLowerCase();
+          if (low === 'today' || low === 'сегодня') dueDate = yyyyMmDdInTz({ tz });
+          if (low === 'tomorrow' || low === 'завтра') dueDate = addDaysToYyyyMmDd(yyyyMmDdInTz({ tz }), 1);
+          if (low === 'day after tomorrow' || low === 'послезавтра') dueDate = addDaysToYyyyMmDd(yyyyMmDdInTz({ tz }), 2);
+        }
+
+        // If user asked "на завтра/на 8-е" but the model didn't pass dueDate, infer from the message.
+        if (!dueDate && !queryText) {
+          const inferredListDate = inferListDueDateFromText({ userText, tz });
+          if (inferredListDate) dueDate = inferredListDate;
         }
 
         let tasks = [];
         if (preset === 'today') {
           const today = yyyyMmDdInTz({ tz });
           const queryStatus = doneMode === 'only' ? 'Done' : null;
-          const byDate = await tasksRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
-          const inbox = await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
-          const seen = new Set();
-          for (const x of [...byDate, ...inbox]) {
-            if (!x || !x.id) continue;
-            if (seen.has(x.id)) continue;
-            seen.add(x.id);
-            tasks.push(x);
+          if (tag) {
+            tasks = await tasksRepo.listTasks({ tag, dueDate: today, status: queryStatus, limit: 100 });
+          } else {
+            const byDate = await tasksRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
+            const inbox = await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
+            const seen = new Set();
+            for (const x of [...byDate, ...inbox]) {
+              if (!x || !x.id) continue;
+              if (seen.has(x.id)) continue;
+              seen.add(x.id);
+              tasks.push(x);
+            }
           }
         } else {
+          // Support presets for tomorrow/day after tomorrow by converting to dueDate.
+          if (!dueDate && preset === 'tomorrow') dueDate = addDaysToYyyyMmDd(yyyyMmDdInTz({ tz }), 1);
+          if (!dueDate && preset === 'day_after_tomorrow') dueDate = addDaysToYyyyMmDd(yyyyMmDdInTz({ tz }), 2);
           const queryStatus = status || (doneMode === 'only' ? 'Done' : null);
-          tasks = await tasksRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
+
+          if (dueDateOnOrAfter || dueDateBefore) {
+            // Week-style list: include all tasks with due dates in range PLUS all Inbox tasks (even without date).
+            const byRange = await tasksRepo.listTasks({
+              tag,
+              status: queryStatus,
+              dueDateOnOrAfter: dueDateOnOrAfter || null,
+              dueDateBefore: dueDateBefore || null,
+              queryText,
+              limit: 100,
+            });
+            const shouldIncludeInbox = !tag || String(tag).toLowerCase() === 'inbox';
+            const inbox = shouldIncludeInbox ? await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 }) : [];
+            const withinRange = (ymd) => {
+              if (!ymd) return false;
+              const d = String(ymd).slice(0, 10);
+              if (dueDateOnOrAfter && d < String(dueDateOnOrAfter)) return false;
+              if (dueDateBefore && d >= String(dueDateBefore)) return false;
+              return true;
+            };
+            const inboxFiltered = (inbox || []).filter((t) => !t?.dueDate || withinRange(t.dueDate));
+            const seen = new Set();
+            for (const x of [...(byRange || []), ...(inboxFiltered || [])]) {
+              if (!x || !x.id) continue;
+              if (seen.has(x.id)) continue;
+              seen.add(x.id);
+              tasks.push(x);
+            }
+          } else {
+            tasks = await tasksRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
+          }
         }
 
         let filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
@@ -113,7 +172,13 @@ function createToolExecutor({
           // include -> do nothing
         }
 
-        const title = doneMode === 'only' ? 'Твои выполненные задачи:' : 'Твои задачи:';
+        const titleBase = doneMode === 'only' ? 'Твои выполненные задачи:' : 'Твои задачи:';
+        const title =
+          weekKind === 'this_week'
+            ? `${titleBase} (на этой неделе)`
+            : weekKind === 'next_week'
+              ? `${titleBase} (на следующей неделе)`
+              : titleBase;
         await renderAndRememberList({ chatId, tasks: filtered, title });
         return;
       }
@@ -549,8 +614,115 @@ function createToolExecutor({
           return;
         }
 
-        const posts = await socialRepo.listPosts({ platform: normPlatform.value, status, queryText, limit });
-        await renderAndRememberSocialList({ chatId, posts, title: 'Посты (Social Media Planner):' });
+        const text = String(userText || '').toLowerCase();
+
+        // Date range inference for schedule-style requests:
+        // - "на этой неделе" => today..next Monday (exclusive)
+        // - "на завтра/на число" => specific day range [date, date+1)
+        let dateOnOrAfter = args?.dateOnOrAfter ? String(args.dateOnOrAfter) : null;
+        let dateBefore = args?.dateBefore ? String(args.dateBefore) : null;
+
+        if (!dateOnOrAfter && !dateBefore) {
+          const wk = inferSocialWeekRangeFromText({ userText, tz });
+          if (wk?.dateOnOrAfter && wk?.dateBefore) {
+            dateOnOrAfter = wk.dateOnOrAfter;
+            dateBefore = wk.dateBefore;
+          }
+        }
+
+        if (!dateOnOrAfter && !dateBefore) {
+          const day = inferListDueDateFromText({ userText, tz });
+          if (day) {
+            dateOnOrAfter = day;
+            dateBefore = addDaysToYyyyMmDd(day, 1);
+          }
+        }
+
+        // If user asks for "posts to publish" or provides a date/week, filter out posts without date and already finished ones.
+        const isScheduleQuery =
+          Boolean(dateOnOrAfter || dateBefore) ||
+          /(должен|надо)\s+(опубликовать|публиковать|запостить|постить)/.test(text) ||
+          /(на\s+этой\s+неделе|до\s+конца\s+недел)/.test(text) ||
+          /(на\s+завтра|послезавтра|tomorrow)/.test(text);
+
+        const wantsPublished = /(опубликован|published)/.test(text);
+        const wantsCancelled = /(отменен|отменён|cancelled)/.test(text);
+        const excludeStatuses =
+          !status && isScheduleQuery
+            ? ['Published', 'Cancelled'].filter((s) => (s === 'Published' ? !wantsPublished : s === 'Cancelled' ? !wantsCancelled : true))
+            : null;
+        const requireDate = Boolean(isScheduleQuery);
+
+        debugLog('social_list_schedule_query', {
+          chatId,
+          isScheduleQuery,
+          dateOnOrAfter,
+          dateBefore,
+          requireDate,
+          excludeStatuses,
+          platform: normPlatform.value,
+          status,
+          queryText,
+        });
+
+        const queryLimit = isScheduleQuery ? Math.max(30, Math.min(100, limit * 4)) : limit;
+
+        let posts = [];
+        try {
+          posts = await socialRepo.listPosts({
+            platform: normPlatform.value,
+            status,
+            excludeStatuses,
+            requireDate,
+            dateOnOrAfter,
+            dateBefore,
+            queryText,
+            limit: queryLimit,
+          });
+        } catch (e) {
+          // Fallback: if Notion filter operators differ for status/date, retry without advanced filters
+          // and apply filtering locally.
+          debugLog('social_list_retry_without_advanced_filters', { message: String(e?.message || e) });
+          posts = await socialRepo.listPosts({
+            platform: normPlatform.value,
+            status,
+            dateOnOrAfter,
+            dateBefore,
+            queryText,
+            limit: queryLimit,
+          });
+        }
+
+        // Always apply strict filtering locally for schedule-style queries:
+        // - hide Published/Cancelled by default
+        // - require Post date
+        if (isScheduleQuery) {
+          const excl = Array.isArray(excludeStatuses) ? excludeStatuses.map((x) => String(x || '').toLowerCase()) : [];
+          posts = (posts || [])
+            .filter((p) => p && p.postDate)
+            .filter((p) => {
+              if (!excl.length) return true;
+              const st = String(p.status || '').toLowerCase();
+              return !excl.includes(st);
+            });
+
+          // Enforce the computed date range locally too (defense-in-depth).
+          // postDate may be YYYY-MM-DD or full ISO datetime; compare by YYYY-MM-DD prefix.
+          const fromYmd = dateOnOrAfter ? String(dateOnOrAfter).slice(0, 10) : null;
+          const beforeYmd = dateBefore ? String(dateBefore).slice(0, 10) : null;
+          if (fromYmd || beforeYmd) {
+            posts = posts.filter((p) => {
+              const ymd = String(p.postDate || '').slice(0, 10);
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return false;
+              if (fromYmd && ymd < fromYmd) return false;
+              if (beforeYmd && ymd >= beforeYmd) return false;
+              return true;
+            });
+          }
+        }
+
+        const title = isScheduleQuery ? 'Посты (к публикации):' : 'Посты (Social Media Planner):';
+        await renderAndRememberSocialList({ chatId, posts: posts || [], title });
         return;
       }
 

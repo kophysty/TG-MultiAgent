@@ -1034,7 +1034,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   }
 
   async function renderAndRememberSocialList({ chatId, posts, title }) {
-    const shown = (posts || []).slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
+    const slice = (posts || []).slice(0, 20);
+    const shown = slice.map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
     lastShownSocialListByChatId.set(chatId, shown);
 
     const lines = [title, ''];
@@ -1044,12 +1045,48 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       return;
     }
 
-    const slice = (posts || []).slice(0, 20);
-    for (let i = 0; i < slice.length; i++) {
-      const it = slice[i];
-      if (!it || !it.title) continue;
-      const plats = Array.isArray(it.platform) && it.platform.length ? ` [${it.platform.join(', ')}]` : '';
-      lines.push(`${i + 1}. ${it.title}${plats}`);
+    const scheduleMode = String(title || '').toLowerCase().includes('к публикации');
+
+    if (scheduleMode) {
+      // Group by platform, but keep global numbering for follow-ups like "во втором посте".
+      const groups = new Map(); // platformLabel -> items[]
+      const order = [];
+      const getLabel = (it) => {
+        const plats = Array.isArray(it.platform) ? it.platform.filter(Boolean) : [];
+        const raw = plats.length ? plats[0] : 'Other';
+        const s = String(raw || '').trim();
+        return s || 'Other';
+      };
+
+      for (let i = 0; i < slice.length; i++) {
+        const it = slice[i];
+        if (!it || !it.title) continue;
+        const label = getLabel(it);
+        if (!groups.has(label)) {
+          groups.set(label, []);
+          order.push(label);
+        }
+        groups.get(label).push({ idx: i + 1, post: it });
+      }
+
+      for (const label of order) {
+        lines.push(`${label}:`);
+        const items = groups.get(label) || [];
+        for (const x of items) {
+          const it = x.post;
+          const ymd = it.postDate ? String(it.postDate).slice(0, 10) : '';
+          const date = ymd ? `(${ymd}) ` : '';
+          lines.push(`${x.idx}. ${date}${it.title}`);
+        }
+        lines.push('');
+      }
+    } else {
+      for (let i = 0; i < slice.length; i++) {
+        const it = slice[i];
+        if (!it || !it.title) continue;
+        const plats = Array.isArray(it.platform) && it.platform.length ? ` [${it.platform.join(', ')}]` : '';
+        lines.push(`${i + 1}. ${it.title}${plats}`);
+      }
     }
     bot.sendMessage(chatId, lines.join('\n'));
   }
@@ -1200,7 +1237,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       },
     };
     const version = todoBotPkg?.version ? `v${todoBotPkg.version}` : 'v0.0.0';
-    bot.sendMessage(chatId, `Welcome to TG-MultiAgent To-Do bot (dev). Version: ${version}`, opts);
+    bot.sendMessage(chatId, `Welcome to TG-MultiAgent To-Do bot (dev). Чем могу помочь?`, opts);
+    bot.sendMessage(chatId, `Версия: ${version}`);
 
     // Auto-subscribe chat to reminders if Postgres is configured.
     if (remindersRepo) {
@@ -1503,6 +1541,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
     // Ignore commands here (handled by onText handlers).
     if (msg.text && msg.text.startsWith('/')) return;
+    // "Start" is handled by onText handler above. Do not feed it into AI pipeline to avoid duplicate greetings.
+    if (msg.text && /^Start$/i.test(String(msg.text).trim())) return;
 
     // Voice pipeline (minimal v1): download -> ffmpeg -> STT -> planner/tools.
     if (msg.voice && msg.voice.file_id) {

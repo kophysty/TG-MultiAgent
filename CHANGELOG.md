@@ -35,6 +35,18 @@ All notable changes to this project will be documented in this file.
   - Added CLI healthcheck script for Postgres, Notion, and Telegram send.
   - Bumped todo bot version to `v0.1.28` and reminders worker to `v0.1.4`.
 
+- Social Media Planner (schedule lists):
+  - List posts understands date phrases: tomorrow/day after tomorrow, "on Nth day", and "this week" (from today until next Monday, in `TG_TZ`).
+  - For schedule-style queries, hides posts without `Post date` and excludes `Published` and `Cancelled` by default.
+  - Bumped todo bot version to `v0.1.29`.
+
+- Tasks (week ranges):
+  - List tasks understands "this week" and "next week" ranges based on `TG_TZ`, including phrasing like "на эту неделю".
+  - Week lists include tasks with Due Date in the range plus Inbox (even without due date). Other tasks without due date are excluded.
+  - Prevented AI pipeline from responding to `Start` (avoids duplicate greetings).
+  - `/start` greeting no longer repeats version (version is sent as a separate message).
+  - Bumped todo bot version to `v0.1.32`.
+
 - Dev orchestration:
   - Added `core/runtime/dev_runner.js` to run todo bot and reminders worker from one command.
 

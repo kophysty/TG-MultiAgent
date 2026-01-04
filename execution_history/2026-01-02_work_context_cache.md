@@ -76,3 +76,4 @@ docker exec -i tg-multiagent-postgres psql -U tg_multiagent -d tg_multiagent -c 
 - Добавить диагностику (healthcheck) на наличие `work_context_cache` и свежесть кэша.
 
 
+
