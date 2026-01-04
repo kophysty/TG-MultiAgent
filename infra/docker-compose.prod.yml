@@ -1,0 +1,76 @@
+name: tg-multiagent-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-multiagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tg_multiagent}
+      POSTGRES_USER: ${POSTGRES_USER:-tg_multiagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg_multiagent_dev}
+    volumes:
+      - tg_multiagent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tg_multiagent} -d ${POSTGRES_DB:-tg_multiagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  todo_bot:
+    build:
+      context: ..
+      dockerfile: apps/todo_bot/Dockerfile
+    container_name: tg-multiagent-todo-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      TG_BOT_MODE: prod
+      # Inside docker network, Postgres host is `postgres`, not `localhost`.
+      POSTGRES_URL: postgres://${POSTGRES_USER:-tg_multiagent}:${POSTGRES_PASSWORD:-tg_multiagent_dev}@postgres:5432/${POSTGRES_DB:-tg_multiagent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node core/runtime/healthcheck.js --postgres --notion >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  reminders_worker:
+    build:
+      context: ..
+      dockerfile: apps/reminders_worker/Dockerfile
+    container_name: tg-multiagent-reminders-worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      TG_BOT_MODE: prod
+      POSTGRES_URL: postgres://${POSTGRES_USER:-tg_multiagent}:${POSTGRES_PASSWORD:-tg_multiagent_dev}@postgres:5432/${POSTGRES_DB:-tg_multiagent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node core/runtime/healthcheck.js --postgres >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tg_multiagent_postgres_data:
+
+

@@ -39,6 +39,8 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-02_work_context_cache.md` - Work context: Notion -> Postgres cache + bot injection
 - `2026-01-02_healthcheck_chat_memory_flag.md` - Healthcheck CLI + chat_memory_enabled flag
 - `2026-01-02_dev_runner.md` - Dev runner: one command to run bot + worker
+- `2026-01-04_prod_compose.md` - Docker Compose для prod (postgres + bot + worker)
+- `2026-01-04_event_log.md` - Observability: event_log + trace_id (MVP)
 - `2026-01-05_week_tasks_start_greeting.md` - Недельные списки задач: "на эту неделю" + /start приветствие без версии
 
 

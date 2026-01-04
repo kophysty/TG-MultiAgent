@@ -18,6 +18,7 @@ const {
 const crypto = require('crypto');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
+const { makeTraceId } = require('../runtime/trace');
 
 function md5(text) {
   return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
@@ -55,11 +56,27 @@ function createCallbackQueryHandler({
   notionRepo,
   chatSecurity,
   pgPool = null,
+  eventLogRepo = null,
 }) {
   return async function handleCallbackQuery(query) {
     const chatId = query.message.chat.id;
     const action = query.data;
+    const traceId = makeTraceId();
     debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
+
+    if (eventLogRepo) {
+      eventLogRepo
+        .appendEvent({
+          traceId,
+          chatId,
+          tgMessageId: query?.message?.message_id || null,
+          component: 'todo_bot',
+          event: 'incoming_callback',
+          level: 'info',
+          payload: { dataPreview: String(action || '').slice(0, 120) },
+        })
+        .catch(() => {});
+    }
 
     if (chatSecurity) {
       try {

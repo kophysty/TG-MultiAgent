@@ -41,6 +41,61 @@ function sanitizeTextForStorage(text) {
   return `${s.slice(0, maxLen - 12)}\n...[truncated]`;
 }
 
+function sanitizeErrorForEventLog(err) {
+  const code = err?.code || err?.error_code || null;
+  const raw = err?.message || err?.description || String(err || '');
+  const message = redactSecretsForStorage(raw);
+  const descriptionRaw = err?.response?.body?.description || '';
+  const description = redactSecretsForStorage(String(descriptionRaw || ''));
+  return {
+    code,
+    message,
+    description: description || null,
+  };
+}
+
+function sanitizeForEventLog(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (depth >= 6) return '[max_depth]';
+  if (typeof value === 'string') return sanitizeTextForStorage(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Error) return sanitizeErrorForEventLog(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    for (const v of value.slice(0, 50)) out.push(sanitizeForEventLog(v, depth + 1));
+    if (value.length > 50) out.push(`[truncated:${value.length - 50}]`);
+    return out;
+  }
+
+  if (typeof value === 'object') {
+    const out = {};
+    const entries = Object.entries(value);
+    const maxKeys = 50;
+    for (const [k0, v] of entries.slice(0, maxKeys)) {
+      const k = String(k0 || '').trim() || 'key';
+      const keyLower = k.toLowerCase();
+      const looksSecret =
+        keyLower.includes('token') ||
+        keyLower.includes('authorization') ||
+        keyLower.includes('cookie') ||
+        keyLower.includes('secret') ||
+        keyLower.includes('password') ||
+        keyLower.includes('api_key') ||
+        keyLower === 'key';
+      out[k] = looksSecret ? '<REDACTED>' : sanitizeForEventLog(v, depth + 1);
+    }
+    if (entries.length > maxKeys) out._truncated_keys = entries.length - maxKeys;
+    return out;
+  }
+
+  try {
+    return sanitizeTextForStorage(String(value));
+  } catch {
+    return '[unprintable]';
+  }
+}
+
 function sanitizeForLog(value) {
   if (value === null || value === undefined) return value;
   if (typeof value === 'string') return redactTelegramToken(value);
@@ -72,6 +127,7 @@ module.exports = {
   redactTelegramToken,
   redactSecretsForStorage,
   sanitizeTextForStorage,
+  sanitizeForEventLog,
   sanitizeForLog,
   sanitizeErrorForLog,
 };

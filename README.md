@@ -33,6 +33,21 @@ Telegram агент, который работает с Notion как с пер�
 
 Docker Compose лежит в `infra/docker-compose.yml`.
 
+### Docker Compose для prod (postgres + bot + worker)
+
+Файл: `infra/docker-compose.prod.yml`
+
+Примечания:
+
+- Внутри docker сети host Postgres это `postgres`, а не `localhost`. В prod compose мы принудительно задаем `POSTGRES_URL` с host `postgres`.
+- Для запуска нужны переменные окружения (обычно через `../.env`), включая токены Telegram и Notion.
+
+Запуск:
+
+```bash
+docker compose -f infra/docker-compose.prod.yml up -d --build
+```
+
 ### Локальный Postgres (dev)
 
 Если ты поднимаешь Postgres через `infra/docker-compose.yml`, то по умолчанию будет:

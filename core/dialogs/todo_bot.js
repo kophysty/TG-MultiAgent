@@ -8,12 +8,14 @@ const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { ChatMemoryRepo } = require('../connectors/postgres/chat_memory_repo');
 const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
 const { WorkContextRepo } = require('../connectors/postgres/work_context_repo');
+const { EventLogRepo } = require('../connectors/postgres/event_log_repo');
 const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
 const { sanitizeErrorForLog, sanitizeForLog, sanitizeTextForStorage } = require('../runtime/log_sanitize');
 const { extractPreferences, isLikelyPreferenceText } = require('../ai/preference_extractor');
 const { createChatSecurity, formatChatLine } = require('../runtime/chat_security');
+const { makeTraceId } = require('../runtime/trace');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -719,6 +721,18 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
   const memorySuggestionsRepo = pgPool ? new MemorySuggestionsRepo({ pool: pgPool }) : null;
   const workCtxRepo = pgPool ? new WorkContextRepo({ pool: pgPool }) : null;
+  let eventLogRepo = null;
+  if (pgPool) {
+    const repo = new EventLogRepo({ pool: pgPool });
+    try {
+      await pgPool.query('SELECT 1 FROM event_log LIMIT 1');
+      eventLogRepo = repo;
+      debugLog('event_log_enabled', { ok: true });
+    } catch (e) {
+      eventLogRepo = null;
+      debugLog('event_log_disabled', { ok: false, reason: 'pg_or_tables_missing', message: String(e?.message || e) });
+    }
+  }
   let chatMemoryRepo = null;
   if (pgPool && isChatMemoryEnabled()) {
     const repo = new ChatMemoryRepo({ pool: pgPool });
@@ -1507,6 +1521,26 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const from = msg.from?.username || null;
+    const traceId = makeTraceId();
+
+    if (eventLogRepo) {
+      eventLogRepo
+        .appendEvent({
+          traceId,
+          chatId,
+          tgMessageId: msg.message_id || null,
+          component: 'todo_bot',
+          event: 'incoming_message',
+          level: 'info',
+          payload: {
+            hasText: Boolean(msg.text),
+            hasVoice: Boolean(msg.voice && msg.voice.file_id),
+            textLen: msg.text ? String(msg.text).length : 0,
+            textPreview: msg.text ? String(msg.text).slice(0, 120) : null,
+          },
+        })
+        .catch(() => {});
+    }
 
     await chatSecurity.touchFromMsg(msg);
     if (await chatSecurity.shouldBlockChat(chatId)) {
@@ -1769,6 +1803,22 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         chatHistory: chatCtx?.chatHistory || null,
         workContext,
       });
+      if (eventLogRepo) {
+        eventLogRepo
+          .appendEvent({
+            traceId,
+            chatId,
+            tgMessageId: msg.message_id || null,
+            component: 'planner',
+            event: 'planner_plan',
+            level: 'info',
+            payload: {
+              type: plan?.type || null,
+              tool: plan?.type === 'tool' ? plan?.tool?.name || null : null,
+            },
+          })
+          .catch(() => {});
+      }
       if (plan.type === 'chat') {
         // Guard: for Journal-related intents, do not let the model ask the user to provide fields.
         // Always route to tools and let deterministic code infer/fill missing fields.
@@ -1803,6 +1853,19 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       }
     } catch (e) {
       debugLog('planner_error', { message: String(e?.message || e) });
+      if (eventLogRepo) {
+        eventLogRepo
+          .appendEvent({
+            traceId,
+            chatId,
+            tgMessageId: msg.message_id || null,
+            component: 'planner',
+            event: 'error',
+            level: 'error',
+            payload: sanitizeErrorForLog(e),
+          })
+          .catch(() => {});
+      }
       if (isJournalRelatedText(text)) {
         const toolName = isJournalListIntent(text)
           ? 'notion.list_journal_entries'
@@ -1909,6 +1972,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     notionRepo,
     chatSecurity,
     pgPool,
+    eventLogRepo,
   });
   bot.on('callback_query', handleCallbackQuery);
 

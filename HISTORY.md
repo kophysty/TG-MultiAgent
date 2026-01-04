@@ -147,6 +147,16 @@
 - Dev оркестрация:
   - Добавлен `core/runtime/dev_runner.js` для запуска bot и worker одной командой.
 
+- Prod Docker Compose:
+  - Добавлен `infra/docker-compose.prod.yml` (postgres + bot + worker) с healthcheck, restart policy и ротацией логов.
+  - Добавлены Dockerfile для сборки контейнеров: `apps/todo_bot/Dockerfile`, `apps/reminders_worker/Dockerfile`.
+
+- Observability (event_log):
+  - Добавлена таблица `event_log` (Postgres) и repo для записи/query/purge событий (payload только sanitized).
+  - Добавлена начальная генерация `trace_id` для входящих сообщений и callback, логирование решения planner и ошибок worker.
+  - Bumped todo bot version to `v0.1.33`.
+  - Bumped reminders worker version to `v0.1.5`.
+
 - Ideas/Social resolve UX:
   - Добавлен продвинутый fuzzy-resolve для Ideas и Social (RU voice -> LAT title, local fallback).
   - Можно ссылаться на элементы из последнего списка фразами типа "в первой идее" или "во втором посте".

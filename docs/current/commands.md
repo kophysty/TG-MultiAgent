@@ -63,6 +63,16 @@ node core/runtime/dev_runner.js --tests --debug --ai
 
 Остановить: Ctrl+C в том же терминале.
 
+## Docker (prod): запуск bot + worker + postgres
+
+Файл: `infra/docker-compose.prod.yml`
+
+Запуск:
+
+```bash
+docker compose -f infra/docker-compose.prod.yml up -d --build
+```
+
 
 
 

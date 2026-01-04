@@ -10,8 +10,10 @@ const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo'
 const { NotionPreferencesRepo } = require('../../../core/connectors/notion/preferences_repo');
 const { NotionIdeasRepo } = require('../../../core/connectors/notion/ideas_repo');
 const { NotionSocialRepo } = require('../../../core/connectors/notion/social_repo');
+const { EventLogRepo } = require('../../../core/connectors/postgres/event_log_repo');
 const { sanitizeErrorForLog, sanitizeForLog } = require('../../../core/runtime/log_sanitize');
 const { summarizeChat } = require('../../../core/ai/chat_summarizer');
+const { makeTraceId } = require('../../../core/runtime/trace');
 const crypto = require('crypto');
 
 function parseHhMm(text, fallbackH = 11, fallbackM = 0) {
@@ -220,6 +222,13 @@ async function main() {
   const prefsRepo = new PreferencesRepo({ pool: pgPool });
   const chatMemoryRepo = new ChatMemoryRepo({ pool: pgPool });
   const workCtxRepo = new WorkContextRepo({ pool: pgPool });
+  let eventLogRepo = null;
+  try {
+    await pgPool.query('SELECT 1 FROM event_log LIMIT 1');
+    eventLogRepo = new EventLogRepo({ pool: pgPool });
+  } catch {
+    eventLogRepo = null;
+  }
   const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
   const ideasDbId = process.env.NOTION_IDEAS_DB_ID || null;
   const socialDbId = process.env.NOTION_SOCIAL_DB_ID || null;
@@ -695,6 +704,14 @@ async function main() {
   const chatSummarySeconds = Math.max(60, Number(process.env.TG_CHAT_SUMMARY_SECONDS || 900));
   let nextWorkCtxRunAt = 0;
   const workCtxSeconds = Math.max(60, Number(process.env.TG_WORK_CONTEXT_SECONDS || 1800));
+  let nextEventLogPurgeRunAt = 0;
+  const eventLogPurgeSeconds = Math.max(60, Number(process.env.TG_EVENT_LOG_PURGE_SECONDS || 6 * 3600));
+
+  async function eventLogPurgeTick() {
+    if (!eventLogRepo) return;
+    const ttlDays = Math.max(1, Number(process.env.TG_EVENT_LOG_TTL_DAYS || 90));
+    await eventLogRepo.purgeOld({ ttlDays });
+  }
   // Simple polling loop
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -713,9 +730,25 @@ async function main() {
         await workContextTick();
         nextWorkCtxRunAt = nowMs + workCtxSeconds * 1000;
       }
+      if (nowMs >= nextEventLogPurgeRunAt) {
+        await eventLogPurgeTick();
+        nextEventLogPurgeRunAt = nowMs + eventLogPurgeSeconds * 1000;
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('Reminders worker tick error:', sanitizeErrorForLog(e));
+      if (eventLogRepo) {
+        const traceId = makeTraceId();
+        eventLogRepo
+          .appendEvent({
+            traceId,
+            component: 'worker',
+            event: 'tick_error',
+            level: 'error',
+            payload: sanitizeErrorForLog(e),
+          })
+          .catch(() => {});
+      }
     }
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, pollSeconds * 1000));
