@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
 const { makeTraceId } = require('../runtime/trace');
+const { enterWithTrace, getTraceId } = require('../runtime/trace_context');
 
 function md5(text) {
   return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
@@ -62,12 +63,13 @@ function createCallbackQueryHandler({
     const chatId = query.message.chat.id;
     const action = query.data;
     const traceId = makeTraceId();
+    enterWithTrace(traceId);
     debugLog('incoming_callback', { chatId, data: String(action).slice(0, 80) });
 
     if (eventLogRepo) {
       eventLogRepo
         .appendEvent({
-          traceId,
+          traceId: getTraceId() || traceId,
           chatId,
           tgMessageId: query?.message?.message_id || null,
           component: 'todo_bot',

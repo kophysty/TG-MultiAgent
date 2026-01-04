@@ -40,3 +40,6 @@ venv/
 
 # Sources
 sources/
+
+# Diagnostic bundles (generated locally)
+data/diag/

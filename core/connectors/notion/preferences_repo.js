@@ -18,10 +18,10 @@ function richTextValue(text) {
 }
 
 class NotionPreferencesRepo {
-  constructor({ notionToken, preferencesDbId, profilesDbId }) {
+  constructor({ notionToken, preferencesDbId, profilesDbId, eventLogRepo = null }) {
     this._prefsDbId = preferencesDbId;
     this._profilesDbId = profilesDbId;
-    this._http = createNotionHttpClient({ notionToken });
+    this._http = createNotionHttpClient({ notionToken, eventLogRepo, component: 'notion' });
   }
 
   async findPreferencePageByExternalId({ externalId }) {

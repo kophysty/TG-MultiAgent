@@ -14,6 +14,7 @@ const { EventLogRepo } = require('../../../core/connectors/postgres/event_log_re
 const { sanitizeErrorForLog, sanitizeForLog } = require('../../../core/runtime/log_sanitize');
 const { summarizeChat } = require('../../../core/ai/chat_summarizer');
 const { makeTraceId } = require('../../../core/runtime/trace');
+const { enterWithTrace, getTraceId } = require('../../../core/runtime/trace_context');
 const crypto = require('crypto');
 
 function parseHhMm(text, fallbackH = 11, fallbackM = 0) {
@@ -229,19 +230,38 @@ async function main() {
   } catch {
     eventLogRepo = null;
   }
-  const notionRepo = new NotionTasksRepo({ notionToken, databaseId });
+  const notionRepo = new NotionTasksRepo({ notionToken, databaseId, eventLogRepo });
   const ideasDbId = process.env.NOTION_IDEAS_DB_ID || null;
   const socialDbId = process.env.NOTION_SOCIAL_DB_ID || null;
-  const ideasRepo = ideasDbId ? new NotionIdeasRepo({ notionToken, databaseId: ideasDbId }) : null;
-  const socialRepo = socialDbId ? new NotionSocialRepo({ notionToken, databaseId: socialDbId }) : null;
+  const ideasRepo = ideasDbId ? new NotionIdeasRepo({ notionToken, databaseId: ideasDbId, eventLogRepo }) : null;
+  const socialRepo = socialDbId ? new NotionSocialRepo({ notionToken, databaseId: socialDbId, eventLogRepo }) : null;
 
   const preferencesDbId = process.env.NOTION_PREFERENCES_DB_ID || null;
   const profilesDbId = process.env.NOTION_PREFERENCE_PROFILES_DB_ID || null;
-  const notionPrefsRepo = preferencesDbId ? new NotionPreferencesRepo({ notionToken, preferencesDbId, profilesDbId }) : null;
+  const notionPrefsRepo = preferencesDbId ? new NotionPreferencesRepo({ notionToken, preferencesDbId, profilesDbId, eventLogRepo }) : null;
 
   const botByMode = new Map();
   if (tokenTests) botByMode.set('tests', new TelegramBot(tokenTests, { polling: false, request: { timeout: 60_000 } }));
   if (tokenProd) botByMode.set('prod', new TelegramBot(tokenProd, { polling: false, request: { timeout: 60_000 } }));
+
+  if (eventLogRepo) {
+    for (const tg of botByMode.values()) {
+      const orig = tg.sendMessage.bind(tg);
+      tg.sendMessage = async (chatId, text, options) => {
+        eventLogRepo
+          .appendEvent({
+            traceId: getTraceId() || 'no-trace',
+            chatId,
+            component: 'telegram',
+            event: 'tg_send',
+            level: 'info',
+            payload: { textLen: text ? String(text).length : 0, textPreview: text ? String(text).slice(0, 80) : null },
+          })
+          .catch(() => {});
+        return await orig(chatId, text, options);
+      };
+    }
+  }
 
   // eslint-disable-next-line no-console
   console.log(
@@ -716,6 +736,7 @@ async function main() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
+      enterWithTrace(makeTraceId());
       await tick();
       const nowMs = Date.now();
       if (nowMs >= nextMemoryRunAt) {
@@ -738,7 +759,7 @@ async function main() {
       // eslint-disable-next-line no-console
       console.error('Reminders worker tick error:', sanitizeErrorForLog(e));
       if (eventLogRepo) {
-        const traceId = makeTraceId();
+        const traceId = getTraceId() || makeTraceId();
         eventLogRepo
           .appendEvent({
             traceId,

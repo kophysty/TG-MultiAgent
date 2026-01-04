@@ -29,6 +29,22 @@ Telegram агент, который работает с Notion как с пер�
 - **Что нужно**: токен бота (у тебя уже добавлены), локальный процесс, который опрашивает Telegram.
 - **Важно**: у одного бота не должно быть одновременно активного webhook и polling consumer. Если бот раньше работал с webhook - сначала сбрось webhook.
 
+## Dev: диагностика (healthcheck и diag bundle)
+
+Команды и примеры лежат в `docs/current/commands.md`. Коротко:
+
+- Healthcheck (JSON отчет):
+
+```bash
+node core/runtime/healthcheck.js --json
+```
+
+- Diag bundle (пишет в `data/diag/`, папка в `.gitignore`):
+
+```bash
+node apps/diag/src/main.js --chat-id 104999109 --since-hours 24
+```
+
 ## Docker (postgres + n8n)
 
 Docker Compose лежит в `infra/docker-compose.yml`.

@@ -8,6 +8,7 @@ const { NotionIdeasRepo } = require('../../../core/connectors/notion/ideas_repo'
 const { NotionSocialRepo } = require('../../../core/connectors/notion/social_repo');
 const { NotionJournalRepo } = require('../../../core/connectors/notion/journal_repo');
 const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/client');
+const { EventLogRepo } = require('../../../core/connectors/postgres/event_log_repo');
 const { registerTodoBot } = require('../../../core/dialogs/todo_bot');
 const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
 
@@ -40,6 +41,16 @@ async function main() {
   const journalDbId = process.env.NOTION_JOURNAL_DB_ID || '86434dfd454448599233c1832542cf79';
 
   const pgPool = createPgPoolFromEnv(); // optional, enabled when POSTGRES_URL is provided
+  let eventLogRepo = null;
+  if (pgPool) {
+    const repo = new EventLogRepo({ pool: pgPool });
+    try {
+      await pgPool.query('SELECT 1 FROM event_log LIMIT 1');
+      eventLogRepo = repo;
+    } catch {
+      eventLogRepo = null;
+    }
+  }
 
   const bot = new TelegramBot(token, {
     polling: true,
@@ -47,10 +58,10 @@ async function main() {
     request: { timeout: 60_000 },
   });
 
-  const tasksRepo = new NotionTasksRepo({ notionToken, databaseId });
-  const ideasRepo = new NotionIdeasRepo({ notionToken, databaseId: ideasDbId });
-  const socialRepo = new NotionSocialRepo({ notionToken, databaseId: socialDbId });
-  const journalRepo = new NotionJournalRepo({ notionToken, databaseId: journalDbId });
+  const tasksRepo = new NotionTasksRepo({ notionToken, databaseId, eventLogRepo });
+  const ideasRepo = new NotionIdeasRepo({ notionToken, databaseId: ideasDbId, eventLogRepo });
+  const socialRepo = new NotionSocialRepo({ notionToken, databaseId: socialDbId, eventLogRepo });
+  const journalRepo = new NotionJournalRepo({ notionToken, databaseId: journalDbId, eventLogRepo });
 
   await registerTodoBot({
     bot,
@@ -60,6 +71,7 @@ async function main() {
     journalRepo,
     databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
     pgPool,
+    eventLogRepo,
     botMode: mode,
   });
 

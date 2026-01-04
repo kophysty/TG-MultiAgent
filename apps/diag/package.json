@@ -1,0 +1,11 @@
+{
+  "name": "tg-multiagent-diag",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/main.js"
+  }
+}
+
+

@@ -42,5 +42,6 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-04_prod_compose.md` - Docker Compose для prod (postgres + bot + worker)
 - `2026-01-04_event_log.md` - Observability: event_log + trace_id (MVP)
 - `2026-01-05_week_tasks_start_greeting.md` - Недельные списки задач: "на эту неделю" + /start приветствие без версии
+- `2026-01-05_obs_trace_tests_diag.md` - Observability: trace_id trail + tests + diag bundle
 
 

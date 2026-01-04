@@ -1,9 +1,9 @@
 const { createNotionHttpClient } = require('./client');
 
 class NotionJournalRepo {
-  constructor({ notionToken, databaseId }) {
+  constructor({ notionToken, databaseId, eventLogRepo = null }) {
     this._dbId = databaseId;
-    this._http = createNotionHttpClient({ notionToken });
+    this._http = createNotionHttpClient({ notionToken, eventLogRepo, component: 'notion' });
     this._schema = null;
   }
 

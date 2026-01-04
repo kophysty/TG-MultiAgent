@@ -40,6 +40,8 @@ const {
   inferTasksWeekRangeFromText,
 } = require('./todo_bot_helpers');
 
+const { getTraceId } = require('../runtime/trace_context');
+
 function createToolExecutor({
   bot,
   tasksRepo,
@@ -56,10 +58,23 @@ function createToolExecutor({
   renderAndRememberSocialList,
   renderAndRememberJournalList,
   resolveJournalPageIdFromLastShown,
+  eventLogRepo = null,
 }) {
   async function executeToolPlan({ chatId, from, toolName, args, userText }) {
     try {
       debugLog('tool_call', { tool: toolName, chatId, from });
+      if (eventLogRepo) {
+        eventLogRepo
+          .appendEvent({
+            traceId: getTraceId() || 'no-trace',
+            chatId,
+            component: 'executor',
+            event: 'tool_call',
+            level: 'info',
+            payload: { tool: toolName },
+          })
+          .catch(() => {});
+      }
 
       if (toolName === 'notion.list_tasks') {
         const hinted = inferListHintsFromText(userText);

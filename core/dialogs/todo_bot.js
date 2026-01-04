@@ -16,6 +16,7 @@ const { sanitizeErrorForLog, sanitizeForLog, sanitizeTextForStorage } = require(
 const { extractPreferences, isLikelyPreferenceText } = require('../ai/preference_extractor');
 const { createChatSecurity, formatChatLine } = require('../runtime/chat_security');
 const { makeTraceId } = require('../runtime/trace');
+const { enterWithTrace, getTraceId } = require('../runtime/trace_context');
 
 function isDebugEnabled() {
   const v = String(process.env.TG_DEBUG || '').trim().toLowerCase();
@@ -92,6 +93,36 @@ function wrapTelegramBotWithChatMemory({ bot, chatMemoryRepo, shouldStoreAssista
             })
             .catch(() => {});
           return res;
+        };
+      }
+      // Preserve `this` binding for methods.
+      if (typeof orig === 'function') return orig.bind(target);
+      return orig;
+    },
+  });
+}
+
+function wrapTelegramBotWithEventLog({ bot, eventLogRepo }) {
+  if (!eventLogRepo) return bot;
+  return new Proxy(bot, {
+    get(target, prop) {
+      const orig = target[prop];
+      if (prop === 'sendMessage' && typeof orig === 'function') {
+        return (chatId, text, options) => {
+          eventLogRepo
+            .appendEvent({
+              traceId: getTraceId() || makeTraceId(),
+              chatId,
+              component: 'telegram',
+              event: 'tg_send',
+              level: 'info',
+              payload: {
+                textLen: text ? String(text).length : 0,
+                textPreview: text ? String(text).slice(0, 80) : null,
+              },
+            })
+            .catch(() => {});
+          return orig.call(target, chatId, text, options);
         };
       }
       // Preserve `this` binding for methods.
@@ -714,15 +745,15 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
-async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalRepo, databaseIds, pgPool = null, botMode = 'tests' }) {
+async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalRepo, databaseIds, pgPool = null, eventLogRepo: providedEventLogRepo = null, botMode = 'tests' }) {
   debugLog('bot_init', { databaseIds });
   const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
   const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
   const memorySuggestionsRepo = pgPool ? new MemorySuggestionsRepo({ pool: pgPool }) : null;
   const workCtxRepo = pgPool ? new WorkContextRepo({ pool: pgPool }) : null;
-  let eventLogRepo = null;
-  if (pgPool) {
+  let eventLogRepo = providedEventLogRepo || null;
+  if (!eventLogRepo && pgPool) {
     const repo = new EventLogRepo({ pool: pgPool });
     try {
       await pgPool.query('SELECT 1 FROM event_log LIMIT 1');
@@ -750,6 +781,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       chatMemoryRepo = null;
       debugLog('chat_memory_disabled', { ok: false, reason: 'pg_or_tables_missing', message: String(e?.message || e) });
     }
+  }
+
+  if (eventLogRepo) {
+    bot = wrapTelegramBotWithEventLog({ bot, eventLogRepo });
   }
 
   const chatSecurity = createChatSecurity({ bot, pgPool });
@@ -1224,6 +1259,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     renderAndRememberSocialList,
     renderAndRememberJournalList,
     resolveJournalPageIdFromLastShown,
+    eventLogRepo,
   });
 
   function clearTimer(chatId) {
@@ -1522,11 +1558,12 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     const chatId = msg.chat.id;
     const from = msg.from?.username || null;
     const traceId = makeTraceId();
+    enterWithTrace(traceId);
 
     if (eventLogRepo) {
       eventLogRepo
         .appendEvent({
-          traceId,
+          traceId: getTraceId() || traceId,
           chatId,
           tgMessageId: msg.message_id || null,
           component: 'todo_bot',
@@ -1806,7 +1843,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       if (eventLogRepo) {
         eventLogRepo
           .appendEvent({
-            traceId,
+            traceId: getTraceId() || traceId,
             chatId,
             tgMessageId: msg.message_id || null,
             component: 'planner',
@@ -1856,7 +1893,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       if (eventLogRepo) {
         eventLogRepo
           .appendEvent({
-            traceId,
+            traceId: getTraceId() || traceId,
             chatId,
             tgMessageId: msg.message_id || null,
             component: 'planner',

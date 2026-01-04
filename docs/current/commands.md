@@ -53,6 +53,12 @@ node core/runtime/healthcheck.js --notion
 node core/runtime/healthcheck.js --telegram
 ```
 
+JSON отчет:
+
+```bash
+node core/runtime/healthcheck.js --json
+```
+
 ## Dev: запуск bot и worker одной командой
 
 Запускать из корня репозитория:
@@ -71,6 +77,16 @@ node core/runtime/dev_runner.js --tests --debug --ai
 
 ```bash
 docker compose -f infra/docker-compose.prod.yml up -d --build
+```
+
+## Dev: diag bundle (для расследований)
+
+Собирает диагностический bundle в `data/diag/` (папка в `.gitignore`).
+
+Пример:
+
+```bash
+node apps/diag/src/main.js --chat-id 104999109 --since-hours 24
 ```
 
 

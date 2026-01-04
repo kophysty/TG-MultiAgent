@@ -10,10 +10,11 @@ const { sanitizeErrorForLog } = require('./log_sanitize');
 
 function parseArgs(argv) {
   const args = new Set(argv.slice(2));
+  const json = args.has('--json');
   const wantTelegram = args.has('--telegram');
   const wantNotion = args.has('--notion') || (!args.has('--postgres') && !args.has('--telegram'));
   const wantPostgres = args.has('--postgres') || (!args.has('--notion') && !args.has('--telegram'));
-  return { wantTelegram, wantNotion, wantPostgres };
+  return { wantTelegram, wantNotion, wantPostgres, json };
 }
 
 function parseAdminChatIds() {
@@ -176,30 +177,40 @@ function printSection(title, res) {
 
 async function main() {
   hydrateProcessEnv();
-  const { wantTelegram, wantNotion, wantPostgres } = parseArgs(process.argv);
+  const { wantTelegram, wantNotion, wantPostgres, json } = parseArgs(process.argv);
 
   let ok = true;
+  const report = { ok: true, ts: new Date().toISOString(), sections: {} };
 
   if (wantPostgres) {
     const res = await checkPostgres();
-    printSection('Postgres', res);
+    report.sections.postgres = res;
+    if (!json) printSection('Postgres', res);
     ok = ok && res.ok;
   }
 
   if (wantNotion) {
     const res = await checkNotion();
-    printSection('Notion', res);
+    report.sections.notion = res;
+    if (!json) printSection('Notion', res);
     ok = ok && res.ok;
   }
 
   if (wantTelegram) {
     const res = await checkTelegram();
-    printSection('Telegram', res);
+    report.sections.telegram = res;
+    if (!json) printSection('Telegram', res);
     ok = ok && res.ok;
   }
 
+  report.ok = ok;
+  if (json) {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify(report));
+  }
+
   // eslint-disable-next-line no-console
-  console.log(`\nResult: ${ok ? 'OK' : 'FAIL'}`);
+  if (!json) console.log(`\nResult: ${ok ? 'OK' : 'FAIL'}`);
   process.exitCode = ok ? 0 : 1;
 }
 

@@ -153,9 +153,15 @@
 
 - Observability (event_log):
   - Добавлена таблица `event_log` (Postgres) и repo для записи/query/purge событий (payload только sanitized).
-  - Добавлена начальная генерация `trace_id` для входящих сообщений и callback, логирование решения planner и ошибок worker.
-  - Bumped todo bot version to `v0.1.33`.
-  - Bumped reminders worker version to `v0.1.5`.
+  - Добавлен `trace_id` через AsyncLocalStorage и расширен decision trail:
+    - tool calls executor
+    - Notion request/response/error
+    - Telegram send (outbound)
+  - Добавлен CLI `apps/diag` для сборки диагностического bundle (пишет в `data/diag/`, папка в .gitignore).
+  - Healthcheck CLI поддерживает `--json`.
+  - Добавлены unit tests в `core` (node:test) для helpers.
+  - Bumped todo bot version to `v0.1.34`.
+  - Bumped reminders worker version to `v0.1.6`.
 
 - Ideas/Social resolve UX:
   - Добавлен продвинутый fuzzy-resolve для Ideas и Social (RU voice -> LAT title, local fallback).

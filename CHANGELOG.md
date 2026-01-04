@@ -56,8 +56,14 @@ All notable changes to this project will be documented in this file.
 
 - Observability (event_log):
   - Added `event_log` table (Postgres) and repo for inserting/querying/purging sanitized events.
-  - Added initial trace_id generation for incoming messages and callbacks, and logs planner decisions and worker errors.
-  - Bumped todo bot version to `v0.1.33` and reminders worker to `v0.1.5`.
+  - Added trace_id propagation via AsyncLocalStorage and extended decision trail:
+    - executor tool calls
+    - Notion request/response/error
+    - Telegram send (outbound)
+  - Added diag bundle CLI under `apps/diag` (writes to `data/diag/`, ignored by git).
+  - Healthcheck CLI now supports `--json`.
+  - Added `core` unit tests (node:test) for helpers.
+  - Bumped todo bot version to `v0.1.34` and reminders worker to `v0.1.6`.
 
 - Ideas and Social resolve:
   - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).
