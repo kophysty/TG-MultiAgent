@@ -4,7 +4,7 @@
 
 ## Версия
 
-- Текущая версия todo bot: `v0.1.34`
+- Текущая версия todo bot: `v0.1.38`
 
 ## Разделы
 
@@ -29,6 +29,7 @@
 - `TELEGRAM_BOT_TOKEN_PROD` - токен прод бота (`@my_temp_todo_bot`).
 - `NOTION_TOKEN` - токен Notion integration.
 - `NOTION_TASKS_DB_ID` - id базы задач (Tasks Base MultiAgent, current: `2d6535c900f08191a624d325f66dbe7c`).
+- `NOTION_TASKS_TEST_DB_ID` - id тестовой базы задач (используется в режиме "Тест задачи", per chat).
 - `NOTION_IDEAS_DB_ID` - id базы идей (Ideas DB, current: `2d6535c900f080ea88d9cd555af22068`).
 - `NOTION_SOCIAL_DB_ID` - id базы Social Media Planner (current: `2d6535c900f080929233d249e1247d06`).
 - `NOTION_JOURNAL_DB_ID` - id базы дневника Journal (current: `86434dfd454448599233c1832542cf79`).

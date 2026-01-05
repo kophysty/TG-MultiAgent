@@ -4,11 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- Admin self-diagnostics (todo bot):
-  - Added admin-only commands: `/commands`, `/errors`, `/history_list`, `/history_show`, `/history_summary`.
-  - Admin chat reply keyboard shows `/commands` instead of `/list` (user chats keep `/list`).
-  - Startup resilience: retry Notion getOptions on transient network errors and notify admins on fatal startup errors.
-  - Bumped todo bot version to `v0.1.37`.
+- Todo bot admin (security) команды и диагностика:
+  - Admin-only `/commands` (список админских команд).
+  - `/errors [hours]` - последние ошибки (Postgres `event_log`) по текущему чату.
+  - `/history_list N`, `/history_show N|file`, `/history_summary days` - просмотр `execution_history/` из чата.
+  - Startup resiliency: ретраи на старте при transient Notion ошибках и best-effort notify админам.
+  - Bumped todo bot version to `v0.1.38`.
 
 - Memory and preferences (MVP):
   - Added Postgres tables for user preferences and a Notion sync queue.
@@ -69,7 +70,16 @@ All notable changes to this project will be documented in this file.
   - Added diag bundle CLI under `apps/diag` (writes to `data/diag/`, ignored by git).
   - Healthcheck CLI now supports `--json`.
   - Added `core` unit tests (node:test) for helpers.
-  - Bumped todo bot version to `v0.1.35` and reminders worker to `v0.1.6`.
+  - Bumped todo bot version to `v0.1.36` and reminders worker to `v0.1.6`.
+
+- Tasks test board mode:
+  - Added per-chat toggle via reply keyboard: `Тест задачи: ВКЛ` and `Тест задачи: ВЫКЛ`.
+  - When enabled, all Tasks operations (AI and commands like /today and /list) use `NOTION_TASKS_TEST_DB_ID`.
+  - Bot marks outputs with `[TEST TASKS]` prefix to avoid mixing with main tasks.
+
+- Docker pre-deploy fixes:
+  - Added ffmpeg to production images (required for voice pipeline).
+  - Fixed prod compose healthcheck paths to use absolute `/app/core/runtime/healthcheck.js`.
 
 - Ideas tags semantics:
   - Update Idea tags are merged by default (adds to existing tags) unless user explicitly asks to replace tags.

@@ -41,6 +41,8 @@ function computePreferenceSyncHash({ externalId, key, scope, category, active, v
 function createCallbackQueryHandler({
   bot,
   tasksRepo,
+  tasksRepoTest = null,
+  resolveTasksRepoByMode = null,
   ideasRepo,
   socialRepo,
   journalRepo,
@@ -59,6 +61,19 @@ function createCallbackQueryHandler({
   pgPool = null,
   eventLogRepo = null,
 }) {
+  function normalizeBoard(mode) {
+    const m = String(mode || '').trim().toLowerCase();
+    if (m === 'test' || m === 'tests') return 'test';
+    return 'main';
+  }
+
+  function resolveTasksRepoForBoard(board) {
+    if (typeof resolveTasksRepoByMode === 'function') return resolveTasksRepoByMode(board);
+    const b = normalizeBoard(board);
+    if (b === 'test' && tasksRepoTest) return tasksRepoTest;
+    return tasksRepo;
+  }
+
   return async function handleCallbackQuery(query) {
     const chatId = query.message.chat.id;
     const action = query.data;
@@ -117,12 +132,12 @@ function createCallbackQueryHandler({
         bot.answerCallbackQuery(query.id);
         try {
           if (kind === 'notion.mark_done') {
-            await tasksRepo.markDone({ pageId: payload.pageId });
+            await resolveTasksRepoForBoard(payload?._board).markDone({ pageId: payload.pageId });
             bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
             return;
           }
           if (kind === 'notion.move_to_deprecated') {
-            await tasksRepo.moveToDeprecated({ pageId: payload.pageId });
+            await resolveTasksRepoForBoard(payload?._board).moveToDeprecated({ pageId: payload.pageId });
             bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
             if (Array.isArray(payload._queueQueries) && payload._queueQueries.length) {
               const next = payload._queueQueries[0];
@@ -138,20 +153,20 @@ function createCallbackQueryHandler({
             return;
           }
           if (kind === 'notion.update_task') {
-            await tasksRepo.updateTask({ pageId: payload.pageId, ...payload.patch });
+            await resolveTasksRepoForBoard(payload?._board).updateTask({ pageId: payload.pageId, ...payload.patch });
             bot.sendMessage(chatId, 'Готово. Обновил задачу.');
             return;
           }
           if (kind === 'notion.append_description') {
-            await tasksRepo.appendDescription({ pageId: payload.pageId, text: payload.text });
+            await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: payload.pageId, text: payload.text });
             bot.sendMessage(chatId, 'Готово. Добавил описание.');
             return;
           }
           if (kind === 'notion.create_task') {
             const safePayload = { ...(payload || {}) };
             if (safePayload.dueDate) safePayload.dueDate = normalizeDueDateInput({ dueDate: safePayload.dueDate, tz: process.env.TG_TZ || 'Europe/Moscow' });
-            const created = await tasksRepo.createTask(safePayload);
-            if (payload.description) await tasksRepo.appendDescription({ pageId: created.id, text: payload.description });
+            const created = await resolveTasksRepoForBoard(payload?._board).createTask(safePayload);
+            if (payload.description) await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: created.id, text: payload.description });
             bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
             return;
           }
@@ -569,6 +584,8 @@ function createCallbackQueryHandler({
       const fullTask = taskTextById.get(taskId);
       const truncatedTask = truncate(fullTask, 20);
       clearTimer(chatId);
+      const board = pendingTask.get(chatId)?.board || 'main';
+      const tasksRepoForBoard = resolveTasksRepoForBoard(board);
 
       const normalizedCategory = normalizeCategoryInput(category);
       if (!normalizedCategory) {
@@ -588,7 +605,7 @@ function createCallbackQueryHandler({
             waitingFor.date.delete(chatId);
             try {
               debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, status: 'Idle' });
+              await tasksRepoForBoard.createTask({ title: fullTask, tag: category, status: 'Idle' });
               debugLog('notion_result', { op: 'createTask', ok: true });
               bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" without due date.`);
             } catch {
@@ -606,7 +623,7 @@ function createCallbackQueryHandler({
 
       try {
         debugLog('notion_call', { op: 'createTask', tag: normalizedCategory, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: normalizedCategory, status: 'Idle' });
+        await tasksRepoForBoard.createTask({ title: fullTask, tag: normalizedCategory, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${normalizedCategory}\".`);
       } catch {
@@ -629,6 +646,8 @@ function createCallbackQueryHandler({
       clearTimer(chatId);
 
       const finalPriority = String(priorityOpt).toLowerCase() === 'skip' ? null : priorityOpt;
+      const board = pendingTask.get(chatId)?.board || 'main';
+      const tasksRepoForBoard = resolveTasksRepoForBoard(board);
 
       if (DATE_CATEGORIES.includes(category)) {
         waitingFor.date.add(chatId);
@@ -642,7 +661,7 @@ function createCallbackQueryHandler({
             waitingFor.date.delete(chatId);
             try {
               debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-              await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
+              await tasksRepoForBoard.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
               debugLog('notion_result', { op: 'createTask', ok: true });
               bot.sendMessage(chatId, `Date selection time expired. Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
             } catch {
@@ -661,7 +680,7 @@ function createCallbackQueryHandler({
 
       try {
         debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
+        await tasksRepoForBoard.createTask({ title: fullTask, tag: category, priority: finalPriority, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${finalPriority || 'not set'}.`);
       } catch {
@@ -686,10 +705,12 @@ function createCallbackQueryHandler({
 
       const priority = prioRaw === 'null' ? null : prioRaw;
       const dueDate = String(dateString).toLowerCase() === 'skip' ? null : dateString;
+      const board = pendingTask.get(chatId)?.board || 'main';
+      const tasksRepoForBoard = resolveTasksRepoForBoard(board);
 
       try {
         debugLog('notion_call', { op: 'createTask', tag: category, status: 'Idle' });
-        await notionRepo.createTask({ title: fullTask, tag: category, priority, dueDate, status: 'Idle' });
+        await tasksRepoForBoard.createTask({ title: fullTask, tag: category, priority, dueDate, status: 'Idle' });
         debugLog('notion_result', { op: 'createTask', ok: true });
         bot.sendMessage(chatId, `Task \"${truncatedTask}\" has been added to \"${category}\" with Priority: ${priority || 'not set'}, Due Date: ${dueDate || 'not set'}.`);
       } catch {

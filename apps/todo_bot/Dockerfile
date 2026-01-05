@@ -2,6 +2,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# ffmpeg is required for voice pipeline (convert Telegram voice to wav 16k mono).
+RUN apk add --no-cache ffmpeg
+
 # Install deps for todo_bot only
 COPY apps/todo_bot/package.json apps/todo_bot/package-lock.json ./apps/todo_bot/
 RUN cd apps/todo_bot && npm ci --omit=dev

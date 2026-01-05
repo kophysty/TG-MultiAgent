@@ -64,6 +64,7 @@ async function main() {
     process.env.NOTION_DATABASE_ID ||
     process.env.NOTION_DATABASE_ID_LOCAL ||
     '2d6535c900f08191a624d325f66dbe7c';
+  const tasksTestDbId = process.env.NOTION_TASKS_TEST_DB_ID || null;
 
   const ideasDbId = process.env.NOTION_IDEAS_DB_ID || '2d6535c900f080ea88d9cd555af22068';
   const socialDbId = process.env.NOTION_SOCIAL_DB_ID || '2d6535c900f080929233d249e1247d06';
@@ -88,6 +89,7 @@ async function main() {
   });
 
   const tasksRepo = new NotionTasksRepo({ notionToken, databaseId, eventLogRepo });
+  const tasksRepoTest = tasksTestDbId ? new NotionTasksRepo({ notionToken, databaseId: tasksTestDbId, eventLogRepo }) : null;
   const ideasRepo = new NotionIdeasRepo({ notionToken, databaseId: ideasDbId, eventLogRepo });
   const socialRepo = new NotionSocialRepo({ notionToken, databaseId: socialDbId, eventLogRepo });
   const journalRepo = new NotionJournalRepo({ notionToken, databaseId: journalDbId, eventLogRepo });
@@ -96,10 +98,11 @@ async function main() {
     await registerTodoBot({
       bot,
       tasksRepo,
+      tasksRepoTest,
       ideasRepo,
       socialRepo,
       journalRepo,
-      databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
+      databaseIds: { tasks: databaseId, tasksTest: tasksTestDbId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
       pgPool,
       eventLogRepo,
       botMode: mode,

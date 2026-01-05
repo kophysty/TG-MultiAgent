@@ -45,6 +45,9 @@ const { getTraceId } = require('../runtime/trace_context');
 function createToolExecutor({
   bot,
   tasksRepo,
+  tasksRepoTest = null,
+  getTasksBoardModeForChat = null,
+  makeTasksBoardKey = null,
   ideasRepo,
   socialRepo,
   journalRepo,
@@ -77,6 +80,8 @@ function createToolExecutor({
       }
 
       if (toolName === 'notion.list_tasks') {
+        const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
+        const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
         const hinted = inferListHintsFromText(userText);
         const preset = args?.preset ? String(args.preset).trim().toLowerCase() : hinted.preset;
         const tag =
@@ -127,10 +132,10 @@ function createToolExecutor({
           const today = yyyyMmDdInTz({ tz });
           const queryStatus = doneMode === 'only' ? 'Done' : null;
           if (tag) {
-            tasks = await tasksRepo.listTasks({ tag, dueDate: today, status: queryStatus, limit: 100 });
+            tasks = await tasksRepoForChat.listTasks({ tag, dueDate: today, status: queryStatus, limit: 100 });
           } else {
-            const byDate = await tasksRepo.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
-            const inbox = await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
+            const byDate = await tasksRepoForChat.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
+            const inbox = await tasksRepoForChat.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
             const seen = new Set();
             for (const x of [...byDate, ...inbox]) {
               if (!x || !x.id) continue;
@@ -147,7 +152,7 @@ function createToolExecutor({
 
           if (dueDateOnOrAfter || dueDateBefore) {
             // Week-style list: include all tasks with due dates in range PLUS all Inbox tasks (even without date).
-            const byRange = await tasksRepo.listTasks({
+            const byRange = await tasksRepoForChat.listTasks({
               tag,
               status: queryStatus,
               dueDateOnOrAfter: dueDateOnOrAfter || null,
@@ -156,7 +161,7 @@ function createToolExecutor({
               limit: 100,
             });
             const shouldIncludeInbox = !tag || String(tag).toLowerCase() === 'inbox';
-            const inbox = shouldIncludeInbox ? await tasksRepo.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 }) : [];
+            const inbox = shouldIncludeInbox ? await tasksRepoForChat.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 }) : [];
             const withinRange = (ymd) => {
               if (!ymd) return false;
               const d = String(ymd).slice(0, 10);
@@ -173,7 +178,7 @@ function createToolExecutor({
               tasks.push(x);
             }
           } else {
-            tasks = await tasksRepo.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
+            tasks = await tasksRepoForChat.listTasks({ tag, status: queryStatus, dueDate, queryText, limit: 100 });
           }
         }
 
@@ -194,13 +199,15 @@ function createToolExecutor({
             : weekKind === 'next_week'
               ? `${titleBase} (на следующей неделе)`
               : titleBase;
-        await renderAndRememberList({ chatId, tasks: filtered, title });
+        await renderAndRememberList({ chatId, tasks: filtered, title, board });
         return;
       }
 
       if (toolName === 'notion.find_tasks') {
+        const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
+        const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
         const queryText = String(args?.queryText || '').trim();
-        const { tasks, source } = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText, limit: 20 });
+        const { tasks, source } = await findTasksFuzzyEnhanced({ notionRepo: tasksRepoForChat, queryText, limit: 20 });
         const filtered = tasks.filter((t) => !t.tags.includes('Deprecated'));
         const inferredAction = inferRequestedTaskActionFromText(userText);
 
@@ -221,7 +228,7 @@ function createToolExecutor({
           let multiFound = null;
           if (wantsMany) {
             try {
-              const all = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText: userText, limit: 10 });
+              const all = await findTasksFuzzyEnhanced({ notionRepo: tasksRepoForChat, queryText: userText, limit: 10 });
               const allFiltered = (all.tasks || []).filter((x) => !x?.tags?.includes('Deprecated'));
               if (allFiltered.length > 1) multiFound = allFiltered;
             } catch {
@@ -269,7 +276,7 @@ function createToolExecutor({
             pendingToolActionByChatId.set(chatId, {
               id: actionId,
               kind: 'notion.move_to_deprecated',
-              payload: { pageId: chosen.id, _queueQueries: nextQueue.length ? nextQueue : undefined },
+              payload: { pageId: chosen.id, _queueQueries: nextQueue.length ? nextQueue : undefined, _board: board },
               createdAt: Date.now(),
             });
             bot.sendMessage(
@@ -283,7 +290,7 @@ function createToolExecutor({
           pendingToolActionByChatId.set(chatId, {
             id: null,
             kind: 'notion.move_to_deprecated',
-            payload: { _candidates: items, _queueQueries: queue.length ? queue : undefined },
+            payload: { _candidates: items, _queueQueries: queue.length ? queue : undefined, _board: board },
             createdAt: Date.now(),
           });
           bot.sendMessage(chatId, 'Нашел несколько задач для удаления. Выбери:', buildPickTaskKeyboard({ items }));
@@ -291,11 +298,13 @@ function createToolExecutor({
         }
 
         const suffix = source === 'local' ? ' (локальный fuzzy)' : '';
-        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":${suffix}` });
+        await renderAndRememberList({ chatId, tasks: filtered, title: `Найдено по "${queryText}":${suffix}`, board });
         return;
       }
 
       if (toolName === 'notion.create_task') {
+        const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
+        const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
         const title = String(args?.title || '').trim();
         const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
         const priority = args?.priority ? String(args.priority) : null;
@@ -306,22 +315,22 @@ function createToolExecutor({
 
         // Dedup check: if a similar active task exists, ask before creating a duplicate.
         const key = normalizeTitleKey(title);
-        const candidates = (await tasksRepo.findTasks({ queryText: title, limit: 10 })).filter((t) => !t.tags.includes('Deprecated'));
+        const candidates = (await tasksRepoForChat.findTasks({ queryText: title, limit: 10 })).filter((t) => !t.tags.includes('Deprecated'));
         const dupe = candidates.find((t) => normalizeTitleKey(t.title) === key);
         if (dupe) {
           const actionId = makeId(`${chatId}:${Date.now()}:notion.create_task:${key}`);
           pendingToolActionByChatId.set(chatId, {
             id: actionId,
             kind: 'notion.create_task',
-            payload: { title, tag, priority, dueDate, status, description },
+            payload: { title, tag, priority, dueDate, status, description, _board: board },
             createdAt: Date.now(),
           });
           bot.sendMessage(chatId, `Похоже, такая задача уже есть: "${dupe.title}". Создать дубль?`, buildToolConfirmKeyboard({ actionId }));
           return;
         }
 
-        const created = await tasksRepo.createTask({ title, tag, priority, dueDate, status });
-        if (description) await tasksRepo.appendDescription({ pageId: created.id, text: description });
+        const created = await tasksRepoForChat.createTask({ title, tag, priority, dueDate, status });
+        if (description) await tasksRepoForChat.appendDescription({ pageId: created.id, text: description });
         bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
         return;
       }
@@ -1262,13 +1271,16 @@ function createToolExecutor({
       }
 
       // Tasks resolution: use either taskIndex (from last list) or pageId.
+      const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
+      const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
+      const listKey = typeof makeTasksBoardKey === 'function' ? makeTasksBoardKey(chatId, board) : chatId;
       const pageId = args?.pageId ? String(args.pageId) : null;
       const taskIndex = args?.taskIndex ? Number(args.taskIndex) : null;
       let resolvedPageId = pageId;
       let resolvedTitle = null;
 
-      if (!resolvedPageId && taskIndex && lastShownListByChatId.has(chatId)) {
-        const found = (lastShownListByChatId.get(chatId) || []).find((x) => x.index === taskIndex);
+      if (!resolvedPageId && taskIndex && lastShownListByChatId.has(listKey)) {
+        const found = (lastShownListByChatId.get(listKey) || []).find((x) => x.index === taskIndex);
         if (found) {
           resolvedPageId = found.id;
           resolvedTitle = found.title || null;
@@ -1285,7 +1297,7 @@ function createToolExecutor({
 
       if (!resolvedPageId && args?.queryText) {
         const queryText = String(args.queryText).trim();
-        const fuzzy = await findTasksFuzzyEnhanced({ notionRepo: tasksRepo, queryText, limit: 10 });
+        const fuzzy = await findTasksFuzzyEnhanced({ notionRepo: tasksRepoForChat, queryText, limit: 10 });
         const candidates = (fuzzy.tasks || []).filter((t) => !t.tags.includes('Deprecated'));
         if (candidates.length === 1) {
           resolvedPageId = candidates[0].id;
@@ -1319,7 +1331,12 @@ function createToolExecutor({
 
       if (toolName === 'notion.mark_done') {
         const actionId = makeId(`${chatId}:${Date.now()}:notion.mark_done:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.mark_done', payload: { pageId: resolvedPageId }, createdAt: Date.now() });
+        pendingToolActionByChatId.set(chatId, {
+          id: actionId,
+          kind: 'notion.mark_done',
+          payload: { pageId: resolvedPageId, _board: board },
+          createdAt: Date.now(),
+        });
         bot.sendMessage(chatId, 'Пометить задачу как выполненную?', buildToolConfirmKeyboard({ actionId }));
         return;
       }
@@ -1330,7 +1347,7 @@ function createToolExecutor({
         pendingToolActionByChatId.set(chatId, {
           id: actionId,
           kind: 'notion.move_to_deprecated',
-          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _queueQueries: queue },
+          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _queueQueries: queue, _board: board },
           createdAt: Date.now(),
         });
         const titleLine = resolvedTitle ? `Задача: "${resolvedTitle}".` : null;
@@ -1347,7 +1364,12 @@ function createToolExecutor({
           status: args?.status ? String(args.status) : undefined,
         };
         const actionId = makeId(`${chatId}:${Date.now()}:notion.update_task:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.update_task', payload: { pageId: resolvedPageId, patch }, createdAt: Date.now() });
+        pendingToolActionByChatId.set(chatId, {
+          id: actionId,
+          kind: 'notion.update_task',
+          payload: { pageId: resolvedPageId, patch, _board: board },
+          createdAt: Date.now(),
+        });
         bot.sendMessage(chatId, 'Применить изменения к задаче?', buildToolConfirmKeyboard({ actionId }));
         return;
       }
@@ -1355,7 +1377,12 @@ function createToolExecutor({
       if (toolName === 'notion.append_description') {
         const text = String(args?.text || '').trim();
         const actionId = makeId(`${chatId}:${Date.now()}:notion.append_description:${resolvedPageId}`);
-        pendingToolActionByChatId.set(chatId, { id: actionId, kind: 'notion.append_description', payload: { pageId: resolvedPageId, text }, createdAt: Date.now() });
+        pendingToolActionByChatId.set(chatId, {
+          id: actionId,
+          kind: 'notion.append_description',
+          payload: { pageId: resolvedPageId, text, _board: board },
+          createdAt: Date.now(),
+        });
         bot.sendMessage(chatId, 'Добавить это в описание задачи?', buildToolConfirmKeyboard({ actionId }));
         return;
       }

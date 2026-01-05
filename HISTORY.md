@@ -172,19 +172,24 @@
 
 ## 2026-01-05
 
+- Todo bot admin (security) команды и диагностика:
+  - Admin-only `/commands` (список админских команд).
+  - `/errors [hours]` - последние ошибки (Postgres `event_log`) по текущему чату.
+  - `/history_list N`, `/history_show N|file`, `/history_summary days` - просмотр `execution_history/` из чата.
+  - Startup resiliency: ретраи на старте при transient Notion ошибках и best-effort notify админам.
 - Ideas tags semantics:
   - "поставь теги X" добавляет теги к существующим (merge) по умолчанию.
   - "замени теги" перезаписывает теги.
   - Fix: "добавь тег" корректно детектится как merge.
 - Tests:
   - Добавлены unit tests для executor (tags merge/replace, last-shown resolve, schedule фильтры, multi-delete queue fallback).
-- Bumped todo bot version to `v0.1.35`.
-
-- Admin команды (todo bot):
-  - Добавлены admin-only команды: `/commands`, `/errors`, `/history_list`, `/history_show`, `/history_summary`.
-  - В админском чате reply keyboard показывает `/commands` вместо `/list`.
-  - Добавлен retry для Notion на старте (защита от transient network ошибок).
-  - При фатальной ошибке запуска бот отправляет уведомление в чаты из `TG_ADMIN_CHAT_IDS` (sanitized).
-  - Bumped todo bot version to `v0.1.37`.
+- Tasks test board mode:
+  - Добавлен per chat переключатель в клавиатуре: "Тест задачи: ВКЛ" и "Тест задачи: ВЫКЛ".
+  - В режиме ВКЛ все операции с задачами (AI и команды /today, /list, /addtask) работают с `NOTION_TASKS_TEST_DB_ID`.
+  - Ответы и списки помечаются префиксом `[TEST TASKS]`.
+- Docker pre-deploy fixes:
+  - В Docker образы добавлен ffmpeg (нужен для voice пайплайна).
+  - В prod compose починены пути healthcheck (абсолютный путь до core/runtime/healthcheck.js).
+- Bumped todo bot version to `v0.1.38`.
 
 

@@ -900,7 +900,18 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
-async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalRepo, databaseIds, pgPool = null, eventLogRepo: providedEventLogRepo = null, botMode = 'tests' }) {
+async function registerTodoBot({
+  bot,
+  tasksRepo,
+  tasksRepoTest = null,
+  ideasRepo,
+  socialRepo,
+  journalRepo,
+  databaseIds,
+  pgPool = null,
+  eventLogRepo: providedEventLogRepo = null,
+  botMode = 'tests',
+}) {
   debugLog('bot_init', { databaseIds });
   let categoryOptions = [];
   let priorityOptions = [];
@@ -1002,7 +1013,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const PRIORITY_OPTIONS = ['skip', ...priorityOptions.length ? priorityOptions : ['Low', 'Med', 'High']];
   const DATE_CATEGORIES = ['Work', 'Home'];
 
-  const pendingTask = new Map(); // chatId -> { id, text }
+  const pendingTask = new Map(); // chatId -> { id, text, board }
   const taskTextById = new Map(); // taskId -> text
   const timers = new Map(); // chatId -> timeoutId
   const waitingFor = {
@@ -1014,7 +1025,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const aiDraftByChatId = new Map(); // chatId -> { id, task, updatedAt, awaitingConfirmation }
   const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
   const pendingToolActionByChatId = new Map(); // chatId -> { id, kind, payload, createdAt }
-  const lastShownListByChatId = new Map(); // chatId -> [{ index, id, title }] (tasks)
+  const lastShownListByChatId = new Map(); // key(chatId,board) -> [{ index, id, title }] (tasks)
   const lastShownIdeasListByChatId = new Map(); // chatId -> [{ index, id, title }] (ideas)
   const lastShownSocialListByChatId = new Map(); // chatId -> [{ index, id, title }] (social posts)
   const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }] (journal)
@@ -1024,6 +1035,80 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
   const memoryCacheByChatId = new Map(); // chatId -> { summary, ts }
   const chatMemoryEnabledCacheByChatId = new Map(); // chatId -> { enabled, ts }
+  const tasksBoardModeCacheByChatId = new Map(); // chatId -> { mode, ts }
+
+  function normalizeTasksBoardMode(mode) {
+    const m = String(mode || '').trim().toLowerCase();
+    if (m === 'test' || m === 'tests') return 'test';
+    return 'main';
+  }
+
+  function tasksBoardPrefix(mode) {
+    return normalizeTasksBoardMode(mode) === 'test' ? '[TEST TASKS] ' : '';
+  }
+
+  function resolveTasksRepoByMode(mode) {
+    const m = normalizeTasksBoardMode(mode);
+    if (m === 'test' && tasksRepoTest) return tasksRepoTest;
+    return tasksRepo;
+  }
+
+  function makeTasksBoardKey(chatId, mode) {
+    return `${Number(chatId)}:${normalizeTasksBoardMode(mode)}`;
+  }
+
+  async function getTasksBoardModeForChat(chatId) {
+    // If test DB is not configured, always use main.
+    if (!tasksRepoTest) return 'main';
+
+    const cached = tasksBoardModeCacheByChatId.get(chatId);
+    if (cached && Date.now() - cached.ts < 60_000) return normalizeTasksBoardMode(cached.mode);
+
+    if (!preferencesRepo) {
+      tasksBoardModeCacheByChatId.set(chatId, { mode: 'main', ts: Date.now() });
+      return 'main';
+    }
+
+    try {
+      const row = await preferencesRepo.getPreference({ chatId, scope: 'global', key: 'tasks_board_mode', activeOnly: false });
+      if (!row || row.active === false) {
+        tasksBoardModeCacheByChatId.set(chatId, { mode: 'main', ts: Date.now() });
+        return 'main';
+      }
+      const vJson = row.value_json || {};
+      const mode = vJson?.mode ? String(vJson.mode) : row.value_human ? String(row.value_human) : 'main';
+      const norm = normalizeTasksBoardMode(mode);
+      tasksBoardModeCacheByChatId.set(chatId, { mode: norm, ts: Date.now() });
+      return norm;
+    } catch {
+      tasksBoardModeCacheByChatId.set(chatId, { mode: 'main', ts: Date.now() });
+      return 'main';
+    }
+  }
+
+  async function setTasksBoardModeForChat(chatId, mode) {
+    const norm = normalizeTasksBoardMode(mode);
+    if (norm === 'test' && !tasksRepoTest) return { ok: false, reason: 'test_db_missing' };
+
+    tasksBoardModeCacheByChatId.set(chatId, { mode: norm, ts: Date.now() });
+    if (!preferencesRepo) return { ok: true, stored: false, mode: norm };
+
+    try {
+      await preferencesRepo.upsertPreference({
+        chatId,
+        scope: 'global',
+        category: 'settings',
+        key: 'tasks_board_mode',
+        valueJson: { mode: norm },
+        valueHuman: norm,
+        active: true,
+        source: 'postgres',
+      });
+      return { ok: true, stored: true, mode: norm };
+    } catch {
+      return { ok: true, stored: false, mode: norm };
+    }
+  }
 
   function buildMemorySummaryFromRows(rows) {
     const items = Array.isArray(rows) ? rows : [];
@@ -1385,6 +1470,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
 
     const task = entry.task;
+    const board = entry.board || 'main';
+    const repo = resolveTasksRepoByMode(board);
     const rawTag = Array.isArray(task?.tags) && task.tags.length ? task.tags[0] : null;
     const tag = normalizeCategoryInput(rawTag) || defaultFallbackCategory();
     const priority = normalizePriorityForDb(task.priority ?? null);
@@ -1392,7 +1479,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
 
     try {
       debugLog('notion_call', { op: 'createTask', tag, status: 'Idle' });
-      await tasksRepo.createTask({
+      await repo.createTask({
         title: task.title,
         tag,
         priority,
@@ -1400,7 +1487,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         status: 'Idle',
       });
       debugLog('notion_result', { op: 'createTask', ok: true });
-      bot.sendMessage(chatId, 'Готово, добавил задачу в Notion.');
+      bot.sendMessage(chatId, `${tasksBoardPrefix(board)}Готово, добавил задачу в Notion.`);
     } catch {
       debugLog('notion_result', { op: 'createTask', ok: false });
       bot.sendMessage(chatId, 'Не получилось создать задачу в Notion. Попробуй еще раз.');
@@ -1428,16 +1515,16 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     return { reply_markup: { inline_keyboard: rows } };
   }
 
-  async function renderAndRememberList({ chatId, tasks, title }) {
+  async function renderAndRememberList({ chatId, tasks, title, board = 'main' }) {
     const shown = tasks.slice(0, 20).map((t, i) => ({ index: i + 1, id: t.id, title: t.title }));
-    lastShownListByChatId.set(chatId, shown);
+    lastShownListByChatId.set(makeTasksBoardKey(chatId, board), shown);
 
     if (!shown.length) {
-      bot.sendMessage(chatId, `${title}\n\n(пусто)`);
+      bot.sendMessage(chatId, `${tasksBoardPrefix(board)}${title}\n\n(пусто)`);
       return;
     }
 
-    const lines = [title, ''];
+    const lines = [`${tasksBoardPrefix(board)}${title}`, ''];
     for (const it of shown) {
       lines.push(`${it.index}. ${it.title}`);
     }
@@ -1447,6 +1534,9 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const { executeToolPlan } = createToolExecutor({
     bot,
     tasksRepo,
+    tasksRepoTest,
+    getTasksBoardModeForChat,
+    makeTasksBoardKey,
     ideasRepo,
     socialRepo,
     journalRepo,
@@ -1478,18 +1568,21 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
     const cmd = String(msg.text || '').trim();
     debugLog('incoming_command', { chatId, command: cmd || '/start', from: msg.from?.username || null });
+    const boardMode = await getTasksBoardModeForChat(chatId);
     const isAdmin = chatSecurity.isAdminChat(chatId);
+    const testButtons = tasksRepoTest ? [[{ text: 'Тест задачи: ВКЛ' }, { text: 'Тест задачи: ВЫКЛ' }]] : [];
     const opts = {
       reply_markup: {
         keyboard: [
           [{ text: '/today' }, { text: isAdmin ? '/commands' : '/list' }, { text: '/addtask' }, { text: 'Start' }],
           [{ text: '/reminders_on' }, { text: '/reminders_off' }],
+          ...testButtons,
         ],
         resize_keyboard: true,
       },
     };
     const version = todoBotPkg?.version ? `v${todoBotPkg.version}` : 'v0.0.0';
-    bot.sendMessage(chatId, `Welcome to TG-MultiAgent To-Do bot (dev). Чем могу помочь?`, opts);
+    bot.sendMessage(chatId, `${tasksBoardPrefix(boardMode)}Welcome to TG-MultiAgent To-Do bot (dev). Чем могу помочь?`, opts);
     bot.sendMessage(chatId, `Версия: ${version}`);
 
     // Auto-subscribe chat to reminders if Postgres is configured.
@@ -1544,6 +1637,34 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
   });
 
+  bot.onText(/^Тест задачи:\s*ВКЛ\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
+    debugLog('incoming_command', { chatId, command: 'test_tasks_on', from: msg.from?.username || null });
+    const res = await setTasksBoardModeForChat(chatId, 'test');
+    if (!res.ok && res.reason === 'test_db_missing') {
+      bot.sendMessage(chatId, 'Тестовая база задач не настроена. Добавь NOTION_TASKS_TEST_DB_ID в .env и перезапусти бота.');
+      return;
+    }
+    bot.sendMessage(chatId, 'Ок. Включил режим тестовых задач.');
+  });
+
+  bot.onText(/^Тест задачи:\s*ВЫКЛ\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (await chatSecurity.shouldBlockChat(chatId)) {
+      await chatSecurity.maybeReplyRevoked(chatId);
+      return;
+    }
+    debugLog('incoming_command', { chatId, command: 'test_tasks_off', from: msg.from?.username || null });
+    await setTasksBoardModeForChat(chatId, 'main');
+    bot.sendMessage(chatId, 'Ок. Выключил режим тестовых задач.');
+  });
+
   bot.onText(/\/struct/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
@@ -1580,10 +1701,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       '',
       '- /commands - показать этот список',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
-      '- /history_list 20 - список файлов в execution_history (пример, можно указать N)',
-      '- /history_show 3 - показать краткий конспект sprint файла по номеру из /history_list',
-      '- /history_show 2026-01-05_admin_cmds.md - показать конспект по имени файла',
-      '- /history_summary 3 - summary за последние N дней (пример)',
+      '- /history_list N - список файлов в execution_history (пример: /history_list 20)',
+      '- /history_show N - показать конспект sprint файла по номеру из /history_list (пример: /history_show 3)',
+      '- /history_show 2026-01-05_test_tasks_mode_predeploy.md - показать конспект по имени файла',
+      '- /history_summary N - summary за последние N дней (пример: /history_summary 3)',
       '',
       'Security:',
       '- /sessions [N]',
@@ -1700,7 +1821,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
     const arg = match && match[1] ? String(match[1]).trim() : '';
     if (!arg) {
-      bot.sendMessage(chatId, 'Укажи номер из /history_list или имя файла. Пример: /history_show 1');
+      bot.sendMessage(chatId, 'Укажи номер из /history_list или имя файла. Пример: /history_show 3');
       return;
     }
 
@@ -1864,7 +1985,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       return;
     }
     debugLog('incoming_command', { chatId, command: '/addtask', from: msg.from?.username || null });
-    pendingTask.set(chatId, { id: null, text: null });
+    const board = await getTasksBoardModeForChat(chatId);
+    pendingTask.set(chatId, { id: null, text: null, board });
     bot.sendMessage(chatId, 'Please enter your new task:');
   });
 
@@ -1877,13 +1999,15 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
     debugLog('incoming_command', { chatId, command: '/list', from: msg.from?.username || null });
     try {
+      const board = await getTasksBoardModeForChat(chatId);
+      const repo = resolveTasksRepoByMode(board);
       debugLog('notion_call', { op: 'listTasks' });
-      const tasks = await tasksRepo.listTasks();
+      const tasks = await repo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const active = tasks.filter((t) => String(t.status || '').toLowerCase() !== 'done' && !t.tags.includes('Deprecated'));
 
       if (!active.length) {
-        bot.sendMessage(chatId, 'You have no active tasks in your list.');
+        bot.sendMessage(chatId, `${tasksBoardPrefix(board)}You have no active tasks in your list.`);
         return;
       }
 
@@ -1908,7 +2032,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         groups.Today.sort((a, b) => (priorityOrder[a.priority] || 99) - (priorityOrder[b.priority] || 99));
       }
 
-      let out = 'Your current active tasks:\n\n';
+      let out = `${tasksBoardPrefix(board)}Your current active tasks:\n\n`;
       for (const [groupName, items] of Object.entries(groups)) {
         if (!items.length) continue;
         out += `*${groupName}*:\n`;
@@ -1930,8 +2054,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
     debugLog('incoming_command', { chatId, command: '/today', from: msg.from?.username || null });
     try {
+      const board = await getTasksBoardModeForChat(chatId);
+      const repo = resolveTasksRepoByMode(board);
       debugLog('notion_call', { op: 'listTasks' });
-      const tasks = await tasksRepo.listTasks();
+      const tasks = await repo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
       const today = moment().startOf('day');
 
@@ -1947,7 +2073,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       );
       const highPrio = tasks.filter((t) => !t.tags.includes('Inbox') && t.status !== 'Done' && !t.tags.includes('Deprecated') && t.priority === 'High');
 
-      let out = '*Your tasks for Today:*\n\n';
+      let out = `${tasksBoardPrefix(board)}*Your tasks for Today:*\n\n`;
       if (todayTasks.length) {
         out += '*Today category:*\n';
         todayTasks.forEach((t, i) => {
@@ -1968,7 +2094,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
           out += `${i + 1}. ${t.title} (${t.tags.join(', ')})\n`;
         });
       }
-      if (!todayTasks.length && !dueToday.length && !highPrio.length) out = 'You have no active tasks for today.';
+      if (!todayTasks.length && !dueToday.length && !highPrio.length) out = `${tasksBoardPrefix(board)}You have no active tasks for today.`;
 
       bot.sendMessage(chatId, out, { parse_mode: 'Markdown' });
     } catch {
@@ -2036,6 +2162,9 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     if (msg.text && msg.text.startsWith('/')) return;
     // "Start" is handled by onText handler above. Do not feed it into AI pipeline to avoid duplicate greetings.
     if (msg.text && /^Start$/i.test(String(msg.text).trim())) return;
+    // Test tasks toggle buttons are handled by onText above.
+    if (msg.text && /^Тест задачи:\s*ВКЛ\s*$/i.test(String(msg.text).trim())) return;
+    if (msg.text && /^Тест задачи:\s*ВЫКЛ\s*$/i.test(String(msg.text).trim())) return;
 
     // Voice pipeline (minimal v1): download -> ffmpeg -> STT -> planner/tools.
     if (msg.voice && msg.voice.file_id) {
@@ -2087,6 +2216,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       const text = msg.text.trim();
       if (!text) return;
 
+      const pending = pendingTask.get(chatId) || { board: 'main' };
+      const board = pending.board || 'main';
+      const repo = resolveTasksRepoByMode(board);
+
       debugLog('incoming_task_text', {
         chatId,
         from,
@@ -2095,7 +2228,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       });
 
       const id = makeId(text);
-      pendingTask.set(chatId, { id, text });
+      pendingTask.set(chatId, { id, text, board });
       taskTextById.set(id, text);
 
       const truncated = truncate(text, 24);
@@ -2108,9 +2241,9 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         setTimeout(async () => {
           try {
             debugLog('notion_call', { op: 'createTask', tag: 'Inbox', status: 'Idle' });
-            await notionRepo.createTask({ title: text, tag: 'Inbox', status: 'Idle' });
+            await repo.createTask({ title: text, tag: 'Inbox', status: 'Idle' });
             debugLog('notion_result', { op: 'createTask', ok: true });
-            bot.sendMessage(chatId, `Category selection time expired. Task \"${truncated}\" has been added to \"Inbox\".`);
+            bot.sendMessage(chatId, `${tasksBoardPrefix(board)}Category selection time expired. Task \"${truncated}\" has been added to \"Inbox\".`);
           } catch {
             debugLog('notion_result', { op: 'createTask', ok: false });
             bot.sendMessage(chatId, 'Failed to add task to Notion. Please try again later.');
@@ -2382,6 +2515,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       }
 
       const draftId = existingDraft?.id || makeId(`${chatId}:${Date.now()}:${normalized.task.title}`);
+      const board = existingDraft?.board || (await getTasksBoardModeForChat(chatId));
 
       // Enforce category constraints and default to Inbox if uncertain.
       const task = normalized.task;
@@ -2399,6 +2533,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
         task,
         updatedAt: Date.now(),
         awaitingConfirmation: true,
+        board,
       };
 
       aiDraftByChatId.set(chatId, draft);
@@ -2415,6 +2550,8 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const handleCallbackQuery = createCallbackQueryHandler({
     bot,
     tasksRepo,
+    tasksRepoTest,
+    resolveTasksRepoByMode,
     ideasRepo,
     socialRepo,
     journalRepo,
