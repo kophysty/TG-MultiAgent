@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file.
   - Startup resiliency: ретраи на старте при transient Notion ошибках и best-effort notify админам.
   - Bumped todo bot version to `v0.1.38`.
 
+- Agent safety:
+  - Добавлено правило: никогда не делать откаты (rollback/revert/reset/cherry-pick/force-push и т.п.) без явного согласования пользователя.
+
 - Memory and preferences (MVP):
   - Added Postgres tables for user preferences and a Notion sync queue.
   - Added Notion Preferences DB + Profiles DB support.

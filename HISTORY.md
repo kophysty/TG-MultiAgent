@@ -192,4 +192,9 @@
   - В prod compose починены пути healthcheck (абсолютный путь до core/runtime/healthcheck.js).
 - Bumped todo bot version to `v0.1.38`.
 
+## 2026-01-06
+
+- Agent safety:
+  - Добавлено правило: никогда не делать откаты (rollback/revert/reset/cherry-pick/force-push и т.п.) без явного согласования пользователя.
+
 

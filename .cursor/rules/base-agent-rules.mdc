@@ -5,6 +5,7 @@ alwaysApply: true
 - **RATIONALE**: Instead of saving files in the root directory, save them in the appropriate subdirectory.
 
 - Never delete logs without my explicit approval, even if you believe the sprint is finished.
+- Никогда не делай откат (rollback/revert/reset/cherry-pick/force-push и т.п.) без явного согласования с пользователем.
 - Inside the chat, we always talk in Russian.
 - Documentation files in this repo are stored in Russian.
 - When making functional changes to the bot or worker, bump the relevant app version (for the bot: `apps/todo_bot/package.json`) so `/start` shows the updated version after restart.
