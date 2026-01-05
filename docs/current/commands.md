@@ -17,6 +17,11 @@
 
 Эти команды доступны только чатам из `TG_ADMIN_CHAT_IDS`.
 
+- `/commands` - показать список админских команд (включая диагностику)
+- `/errors [hours]` - последние ошибки из Postgres `event_log` по текущему чату (по умолчанию 24 часа)
+- `/history_list [N]` - список файлов в `execution_history/` (по умолчанию 20)
+- `/history_show <N|file>` - показать краткий конспект sprint файла из `execution_history/`
+- `/history_summary <days>` - summary по `execution_history/` за последние N дней (по датам в именах файлов)
 - `/sessions [N]` - список известных чатов (sessions)
 - `/security_status` - статус security backend и статистика
 - `/revoke <chatId> [reason]` - отключить чат

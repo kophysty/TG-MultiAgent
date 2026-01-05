@@ -180,4 +180,9 @@
   - Добавлены unit tests для executor (tags merge/replace, last-shown resolve, schedule фильтры, multi-delete queue fallback).
 - Bumped todo bot version to `v0.1.35`.
 
+- Admin команды (todo bot):
+  - Добавлены admin-only команды: `/commands`, `/errors`, `/history_list`, `/history_show`, `/history_summary`.
+  - В админском чате reply keyboard показывает `/commands` вместо `/list`.
+  - Bumped todo bot version to `v0.1.36`.
+
 

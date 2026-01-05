@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const moment = require('moment');
 const { aiAnalyzeMessage } = require('../ai/todo_intent');
 const todoBotPkg = require('../../apps/todo_bot/package.json');
@@ -155,6 +157,116 @@ function oneLinePreview(text, maxLen) {
     .replace(/\s+/g, ' ')
     .trim();
   return truncate(t, maxLen);
+}
+
+function splitTelegramText(text, maxLen = 3500) {
+  const s = String(text || '');
+  if (s.length <= maxLen) return [s];
+  const out = [];
+  let cur = '';
+  for (const line of s.split('\n')) {
+    const next = cur ? `${cur}\n${line}` : line;
+    if (next.length <= maxLen) {
+      cur = next;
+      continue;
+    }
+    if (cur) out.push(cur);
+    if (line.length <= maxLen) {
+      cur = line;
+      continue;
+    }
+    for (let i = 0; i < line.length; i += maxLen) {
+      out.push(line.slice(i, i + maxLen));
+    }
+    cur = '';
+  }
+  if (cur) out.push(cur);
+  return out.filter((x) => x && x.trim());
+}
+
+async function sendLongMessage({ bot, chatId, text }) {
+  const parts = splitTelegramText(text, 3500);
+  for (const p of parts) {
+    // eslint-disable-next-line no-await-in-loop
+    await bot.sendMessage(chatId, p);
+  }
+}
+
+function getRepoRoot() {
+  return path.resolve(__dirname, '..', '..');
+}
+
+function listExecutionHistoryFiles() {
+  const root = getRepoRoot();
+  const dir = path.join(root, 'execution_history');
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const files = entries
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}_.+\.md$/.test(name))
+    .sort()
+    .reverse();
+  return files;
+}
+
+function readExecutionHistoryFileSafe(fileName) {
+  const root = getRepoRoot();
+  const dir = path.join(root, 'execution_history');
+  const safeName = String(fileName || '').replace(/[\\/]/g, '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}_.+\.md$/.test(safeName)) return null;
+  const p = path.join(dir, safeName);
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function extractSprintDigest(md) {
+  const text = String(md || '');
+  const lines = text.split('\n');
+
+  const firstH1 = lines.find((l) => /^#\s+/.test(l)) || '';
+  const title = firstH1 ? firstH1.replace(/^#\s+/, '').trim() : null;
+
+  const sections = {};
+  let cur = null;
+  for (const raw of lines) {
+    const line = String(raw || '');
+    const m = line.match(/^##\s+(.+)\s*$/);
+    if (m) {
+      cur = m[1].trim();
+      if (!sections[cur]) sections[cur] = [];
+      continue;
+    }
+    if (!cur) continue;
+    sections[cur].push(line);
+  }
+
+  const pickSection = (names) => {
+    for (const n of names) {
+      const body = sections[n];
+      if (!body) continue;
+      const cleaned = body.join('\n').trim();
+      if (cleaned) return cleaned;
+    }
+    return null;
+  };
+
+  const goal = pickSection(['Цель', 'Goal']);
+  const changes = pickSection(['Изменения', 'Что сделано', 'Changes implemented', 'Summary', 'Changes implemented']);
+  const files = pickSection(['Файлы', 'Files', 'Files changed (high signal)']);
+  const validate = pickSection(['Как проверить', 'Validation']);
+
+  const parts = [];
+  if (title) parts.push(`## ${title}`);
+  if (goal) parts.push(['Цель:', goal].join('\n'));
+  if (changes) parts.push(['Что сделано:', changes].join('\n'));
+  if (files) parts.push(['Файлы:', files].join('\n'));
+  if (validate) parts.push(['Как проверить:', validate].join('\n'));
+
+  const out = parts.join('\n\n').trim();
+  return out || null;
 }
 
 function inferDateFromText({ userText, tz }) {
@@ -818,6 +930,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   const lastShownIdeasListByChatId = new Map(); // chatId -> [{ index, id, title }] (ideas)
   const lastShownSocialListByChatId = new Map(); // chatId -> [{ index, id, title }] (social posts)
   const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }] (journal)
+  const lastShownHistoryByChatId = new Map(); // chatId -> [{ index, file }] (execution_history)
   const tz = process.env.TG_TZ || 'Europe/Moscow';
   const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
@@ -1277,10 +1390,11 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     }
     const cmd = String(msg.text || '').trim();
     debugLog('incoming_command', { chatId, command: cmd || '/start', from: msg.from?.username || null });
+    const isAdmin = chatSecurity.isAdminChat(chatId);
     const opts = {
       reply_markup: {
         keyboard: [
-          [{ text: '/today' }, { text: '/list' }, { text: '/addtask' }, { text: 'Start' }],
+          [{ text: '/today' }, { text: isAdmin ? '/commands' : '/list' }, { text: '/addtask' }, { text: 'Start' }],
           [{ text: '/reminders_on' }, { text: '/reminders_off' }],
         ],
         resize_keyboard: true,
@@ -1365,6 +1479,225 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
   });
 
   // Security admin commands (notify + sessions + revoke)
+  bot.onText(/^\/commands\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+
+    const lines = [
+      'Админские команды:',
+      '',
+      '- /commands - показать этот список',
+      '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
+      '- /history_list [N] - список файлов в execution_history (по умолчанию 20)',
+      '- /history_show <N|file> - показать краткий конспект sprint файла',
+      '- /history_summary <days> - summary за последние N дней (по датам в именах файлов)',
+      '',
+      'Security:',
+      '- /sessions [N]',
+      '- /security_status',
+      '- /revoke <chatId> [reason]',
+      '- /revoke_here [reason]',
+      '- /unrevoke <chatId>',
+    ];
+
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/errors(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL, чтобы работал event_log.');
+      return;
+    }
+
+    const hours = match && match[1] ? Number(match[1]) : 24;
+    const safeHours = Number.isFinite(hours) ? Math.max(1, Math.min(168, Math.trunc(hours))) : 24;
+    const sinceIso = new Date(Date.now() - safeHours * 3600_000).toISOString();
+
+    let rows = [];
+    try {
+      const r = await pgPool.query(
+        `select ts, trace_id, component, event, level, left(coalesce(payload::text, ''), 500) as payload
+         from event_log
+         where chat_id = $1
+           and ts >= $2::timestamptz
+           and level = 'error'
+         order by ts desc
+         limit 50`,
+        [chatId, sinceIso]
+      );
+      rows = r.rows || [];
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось прочитать event_log. Проверь миграции Postgres. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+
+    if (!rows.length) {
+      bot.sendMessage(chatId, `Ошибок в event_log за последние ${safeHours}ч не нашел.`);
+      return;
+    }
+
+    const counts = new Map();
+    for (const r of rows) {
+      const c = String(r.component || 'unknown');
+      counts.set(c, (counts.get(c) || 0) + 1);
+    }
+    const top = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ');
+
+    const lines = [];
+    lines.push(`Ошибки (event_log) за последние ${safeHours}ч:`);
+    lines.push(`- всего: ${rows.length}`);
+    if (top) lines.push(`- по компонентам: ${top}`);
+    lines.push('');
+    for (const r of rows) {
+      const ts = r.ts ? String(r.ts).replace('T', ' ').slice(0, 19) : '?';
+      const trace = r.trace_id ? String(r.trace_id).slice(0, 24) : 'no-trace';
+      const payload = r.payload ? String(r.payload).replace(/\s+/g, ' ').trim() : '';
+      lines.push(`- ${ts} component=${r.component} event=${r.event} trace=${trace} payload=${truncate(payload, 300)}`);
+    }
+
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/history_list(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const limitRaw = match && match[1] ? Number(match[1]) : 20;
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.trunc(limitRaw))) : 20;
+    let files = [];
+    try {
+      files = listExecutionHistoryFiles();
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось прочитать execution_history. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+
+    const slice = files.slice(0, limit).map((f, i) => ({ index: i + 1, file: f }));
+    lastShownHistoryByChatId.set(chatId, slice);
+    if (!slice.length) {
+      bot.sendMessage(chatId, 'В execution_history нет sprint файлов.');
+      return;
+    }
+    const lines = ['Execution history (последние файлы):', ''];
+    for (const it of slice) lines.push(`${it.index}. ${it.file}`);
+    lines.push('');
+    lines.push('Чтобы посмотреть: /history_show <N> или /history_show <file>');
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/history_show(?:\s+(.+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const arg = match && match[1] ? String(match[1]).trim() : '';
+    if (!arg) {
+      bot.sendMessage(chatId, 'Укажи номер из /history_list или имя файла. Пример: /history_show 1');
+      return;
+    }
+
+    const byIndex = Number(arg);
+    let file = null;
+    if (Number.isFinite(byIndex)) {
+      const list = lastShownHistoryByChatId.get(chatId) || [];
+      const found = list.find((x) => x.index === Math.trunc(byIndex));
+      file = found ? found.file : null;
+      if (!file) {
+        bot.sendMessage(chatId, 'Не нашел этот номер в последнем /history_list. Сначала вызови /history_list.');
+        return;
+      }
+    } else {
+      const all = listExecutionHistoryFiles();
+      const want = arg.endsWith('.md') ? arg : `${arg}.md`;
+      file = all.find((x) => x === want) || all.find((x) => x.includes(arg)) || null;
+      if (!file) {
+        bot.sendMessage(chatId, 'Не нашел такой файл. Сначала вызови /history_list.');
+        return;
+      }
+    }
+
+    const md = readExecutionHistoryFileSafe(file);
+    if (!md) {
+      bot.sendMessage(chatId, 'Не получилось прочитать файл.');
+      return;
+    }
+    const digest = extractSprintDigest(md);
+    if (!digest) {
+      bot.sendMessage(chatId, `Файл: ${file}\n\n(не смог собрать конспект, возможно формат отличается)`);
+      return;
+    }
+    await sendLongMessage({ bot, chatId, text: [`Файл: ${file}`, '', digest].join('\n') });
+  });
+
+  bot.onText(/^\/history_summary(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const daysRaw = match && match[1] ? Number(match[1]) : 3;
+    const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(30, Math.trunc(daysRaw))) : 3;
+
+    const today = new Date();
+    const yyyy = String(today.getUTCFullYear()).padStart(4, '0');
+    const mm = String(today.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(today.getUTCDate()).padStart(2, '0');
+    const todayYmd = `${yyyy}-${mm}-${dd}`;
+
+    const cutoffDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) - (days - 1) * 24 * 60 * 60 * 1000);
+    const cy = String(cutoffDate.getUTCFullYear()).padStart(4, '0');
+    const cm = String(cutoffDate.getUTCMonth() + 1).padStart(2, '0');
+    const cd = String(cutoffDate.getUTCDate()).padStart(2, '0');
+    const cutoffYmd = `${cy}-${cm}-${cd}`;
+
+    const all = listExecutionHistoryFiles();
+    const picked = all.filter((f) => {
+      const m = f.match(/^(\d{4}-\d{2}-\d{2})_/);
+      if (!m) return false;
+      const d0 = m[1];
+      return d0 >= cutoffYmd && d0 <= todayYmd;
+    });
+
+    if (!picked.length) {
+      bot.sendMessage(chatId, `Не нашел sprint файлов за последние ${days} дней.`);
+      return;
+    }
+
+    const lines = [];
+    lines.push(`Summary по execution_history за последние ${days} дней:`);
+    lines.push('');
+    for (const f of picked.slice(0, 20)) {
+      const md = readExecutionHistoryFileSafe(f);
+      if (!md) continue;
+      const digest = extractSprintDigest(md);
+      const one = digest ? splitTelegramText(digest, 900)[0] : null;
+      lines.push(`- ${f}`);
+      if (one) lines.push(`  ${oneLinePreview(one.replace(/\n+/g, ' '), 220)}`);
+    }
+
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
   bot.onText(/^\/sessions(?:\s+(\d+))?\s*$/i, async (msg, match) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
