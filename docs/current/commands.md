@@ -89,6 +89,12 @@ docker compose -f infra/docker-compose.prod.yml up -d --build
 node apps/diag/src/main.js --chat-id 104999109 --since-hours 24
 ```
 
+Опционально можно указать файл вывода:
+
+```bash
+node apps/diag/src/main.js --chat-id 104999109 --since-hours 24 --out data/diag/my-bundle.json
+```
+
 
 
 

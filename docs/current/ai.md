@@ -40,6 +40,22 @@
 - **Notion Tasks CRUD**: создание и чтение задач через Notion API (`core/connectors/notion`).
 - **OpenAI**: анализ текста и выдача структурированного JSON для вопрос/задача и полей задачи.
 
+## Observability (event_log и trace_id)
+
+Для расследований "почему бот сделал именно так" есть операционный лог в Postgres - таблица `event_log`.
+
+- Каждый входящий апдейт получает `trace_id` (AsyncLocalStorage).
+- По `trace_id` можно собрать цепочку:
+  - `incoming_message` / `incoming_callback`
+  - `planner_plan`
+  - `tool_call` (executor)
+  - `notion_request` / `notion_response` / `notion_error`
+  - `tg_send` (outbound)
+
+Важно:
+
+- В `event_log.payload` пишем только sanitized данные (без токенов, заголовков, cookies).
+
 ## Запросы списков и работа с Notion (tools)
 
 Если AI включен (`TG_AI=1`), бот умеет принимать естественные запросы вида:

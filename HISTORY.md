@@ -170,4 +170,14 @@
   - Дефолтная модель для AI в todo bot теперь `gpt-4.1` (если `TG_AI_MODEL` не задан).
   - Bumped todo bot version to `v0.1.25`.
 
+## 2026-01-05
+
+- Ideas tags semantics:
+  - "поставь теги X" добавляет теги к существующим (merge) по умолчанию.
+  - "замени теги" перезаписывает теги.
+  - Fix: "добавь тег" корректно детектится как merge.
+- Tests:
+  - Добавлены unit tests для executor (tags merge/replace, last-shown resolve, schedule фильтры, multi-delete queue fallback).
+- Bumped todo bot version to `v0.1.35`.
+
 

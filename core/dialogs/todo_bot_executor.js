@@ -546,14 +546,23 @@ function createToolExecutor({
           }
         }
 
-        // Tags: support "add tag" semantics (merge) via heuristic.
-        const wantsAddTag = /(добав|допол|ещ(е|ё)|плюс)\s+тег/i.test(String(userText || ''));
+        // Tags:
+        // - Default behavior: "поставь/установи теги X" should ADD (merge) rather than overwrite,
+        //   unless user explicitly asks to REPLACE.
+        // - "добавь тег" must also count as merge (previous regex missed "добавь").
+        const textForTags = String(userText || '');
+        const wantsReplaceTags =
+          /(замен(и|ить|ите)|перезапис(ать|ать\s+все)?|перепиш(и|ите)|очист(и|ить|ите)|сброс(и|ить|ите)|удал(и|ить|ите)\s+все\s+тег)/i.test(textForTags) ||
+          /(только\s+эти\s+тег|остав(ь|ьте)\s+только\s+тег)/i.test(textForTags);
+        const mentionsTag = /(тег)/i.test(textForTags);
+        const wantsMergeTags = !wantsReplaceTags;
         let normTags = args?.tags !== undefined ? args.tags : args?.tag !== undefined ? args.tag : undefined;
         if (normTags !== undefined && normTags !== null) {
           const norm = normalizeMultiOptionValue({ value: normTags, options: tagOptions, aliases: null });
           if (norm.unknown.length) {
-            // allow creating new tag options only when explicitly asked to add tags
-            if (wantsAddTag && typeof ideasRepo.ensureTagsOptions === 'function') {
+            // Allow creating new tag options only when user explicitly mentions tags in text
+            // (avoid creating options from accidental AI guesses).
+            if (mentionsTag && typeof ideasRepo.ensureTagsOptions === 'function') {
               const ensured = await ideasRepo.ensureTagsOptions({ desiredNames: norm.unknown });
               const merged = Array.from(new Set([...(norm.value || []), ...(ensured.resolved || [])]));
               normTags = merged;
@@ -600,7 +609,9 @@ function createToolExecutor({
           source: args?.source !== undefined ? String(args.source) : undefined,
         };
         // resolve pageId via shared logic below
-        args = { ...args, _patch: patch, _mergeTags: Boolean(wantsAddTag) };
+        // Note: merge affects only tags updates. For null (clear) we must not merge.
+        const mergeTags = normTags !== undefined && normTags !== null ? Boolean(wantsMergeTags) : false;
+        args = { ...args, _patch: patch, _mergeTags: mergeTags };
         toolName = 'notion.update_idea_resolve';
       }
 

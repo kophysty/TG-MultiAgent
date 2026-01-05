@@ -32,3 +32,4 @@ docker compose -f infra/docker-compose.prod.yml up -d --build
 - Внутри docker сети host Postgres это `postgres`, а не `localhost`, поэтому `POSTGRES_URL` в compose задан с host `postgres`.
 
 
+

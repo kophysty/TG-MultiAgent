@@ -63,7 +63,12 @@ All notable changes to this project will be documented in this file.
   - Added diag bundle CLI under `apps/diag` (writes to `data/diag/`, ignored by git).
   - Healthcheck CLI now supports `--json`.
   - Added `core` unit tests (node:test) for helpers.
-  - Bumped todo bot version to `v0.1.34` and reminders worker to `v0.1.6`.
+  - Bumped todo bot version to `v0.1.35` and reminders worker to `v0.1.6`.
+
+- Ideas tags semantics:
+  - Update Idea tags are merged by default (adds to existing tags) unless user explicitly asks to replace tags.
+  - Fixed RU trigger so "добавь тег" is detected correctly.
+  - Added executor unit tests for tags merge/replace, last-shown resolve, schedule filters, and multi-delete queue fallback.
 
 - Ideas and Social resolve:
   - Added fuzzy-resolve for Ideas and Social (RU voice -> LAT titles, local fallback).

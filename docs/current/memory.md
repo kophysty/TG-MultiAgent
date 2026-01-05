@@ -49,6 +49,7 @@
 - `infra/db/migrations/004_preferences_sync.sql`
 - `infra/db/migrations/005_notion_sync_queue.sql`
 - `infra/db/migrations/006_chat_memory.sql`
+- `infra/db/migrations/009_event_log.sql`
 
 Таблицы:
 
@@ -57,6 +58,16 @@
 - `notion_sync_queue` - очередь write-through апдейтов в Notion с ретраями
 - `chat_messages` - сообщения чата (user и assistant), уже sanitized
 - `chat_summaries` - короткая сводка чата для восстановления контекста (обновляется воркером)
+- `event_log` - операционный лог (trace_id + decision trail), payload только sanitized
+
+## Observability (event_log и trace_id)
+
+`event_log` нужен для расследований: что пришло, что решил planner, какие tools вызвались, какие запросы ушли в Notion, и какие сообщения ушли в Telegram.
+
+### TTL и чистка
+
+- TTL: `TG_EVENT_LOG_TTL_DAYS` (default 90)
+- Чистка запускается в worker периодически: `TG_EVENT_LOG_PURGE_SECONDS` (default 6h)
 
 ## Chat memory (диалоговая память)
 

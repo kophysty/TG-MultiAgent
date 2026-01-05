@@ -24,3 +24,4 @@ CREATE INDEX IF NOT EXISTS idx_event_log_trace_id
   ON event_log (trace_id);
 
 
+
