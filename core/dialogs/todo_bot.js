@@ -843,6 +843,49 @@ function extractNotionErrorInfo(e) {
   return { status, code, message, requestId, short };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function isRetryableStartupError(e) {
+  const code = String(e?.code || '').trim().toUpperCase();
+  const msg = String(e?.message || '').toLowerCase();
+  const status = e?.response?.status || null;
+  // Typical transient network errors in Node/axios
+  if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return true;
+  if (msg.includes('socket hang up') || msg.includes('read econnreset')) return true;
+  // Notion / network throttling or temporary outages
+  if (status === 429) return true;
+  if (typeof status === 'number' && status >= 500) return true;
+  // axios timeout marker
+  if (e?.code === 'ECONNABORTED') return true;
+  return false;
+}
+
+function parseAdminChatIdsFromEnv() {
+  const raw = String(process.env.TG_ADMIN_CHAT_IDS || '').trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n));
+}
+
+async function notifyAdminsBestEffort({ bot, text }) {
+  const ids = parseAdminChatIdsFromEnv();
+  if (!ids.length) return;
+  for (const chatId of ids) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await bot.sendMessage(chatId, String(text || ''));
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function buildPickPlatformKeyboard({ actionId, platforms }) {
   const rows = [];
   const perRow = 2;
@@ -859,7 +902,52 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
 
 async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalRepo, databaseIds, pgPool = null, eventLogRepo: providedEventLogRepo = null, botMode = 'tests' }) {
   debugLog('bot_init', { databaseIds });
-  const { tags: categoryOptions, priority: priorityOptions } = await tasksRepo.getOptions();
+  let categoryOptions = [];
+  let priorityOptions = [];
+  try {
+    // Startup retry: Notion can transiently fail with ECONNRESET/timeout, do not crash immediately.
+    const maxAttempts = 3;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const res = await tasksRepo.getOptions();
+        categoryOptions = res?.tags || [];
+        priorityOptions = res?.priority || [];
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        const retryable = isRetryableStartupError(e);
+        debugLog('startup_notion_get_options_error', {
+          attempt,
+          retryable,
+          code: e?.code || null,
+          message: String(e?.message || e),
+          status: e?.response?.status || null,
+        });
+        if (!retryable) throw e;
+        if (attempt < maxAttempts) {
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(500 * attempt);
+        }
+      }
+    }
+    if (lastErr) {
+      const info = extractNotionErrorInfo(lastErr);
+      await notifyAdminsBestEffort({
+        bot,
+        text: [
+          'Notion временно недоступен на старте, продолжаю запуск с fallback настройками.',
+          `- error: ${info.short}`,
+          'Подсказка: проверь сеть/VPN и запусти `node core/runtime/healthcheck.js --notion`.',
+        ].join('\n'),
+      });
+    }
+  } catch (e) {
+    // Keep previous behavior for non-retryable errors: fail fast (misconfig, 401/403/404, etc.)
+    throw e;
+  }
   const remindersRepo = pgPool ? new RemindersRepo({ pool: pgPool }) : null;
   const preferencesRepo = pgPool ? new PreferencesRepo({ pool: pgPool }) : null;
   const memorySuggestionsRepo = pgPool ? new MemorySuggestionsRepo({ pool: pgPool }) : null;
@@ -1492,9 +1580,10 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
       '',
       '- /commands - показать этот список',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
-      '- /history_list [N] - список файлов в execution_history (по умолчанию 20)',
-      '- /history_show <N|file> - показать краткий конспект sprint файла',
-      '- /history_summary <days> - summary за последние N дней (по датам в именах файлов)',
+      '- /history_list 20 - список файлов в execution_history (пример, можно указать N)',
+      '- /history_show 3 - показать краткий конспект sprint файла по номеру из /history_list',
+      '- /history_show 2026-01-05_admin_cmds.md - показать конспект по имени файла',
+      '- /history_summary 3 - summary за последние N дней (пример)',
       '',
       'Security:',
       '- /sessions [N]',
@@ -1598,7 +1687,7 @@ async function registerTodoBot({ bot, tasksRepo, ideasRepo, socialRepo, journalR
     const lines = ['Execution history (последние файлы):', ''];
     for (const it of slice) lines.push(`${it.index}. ${it.file}`);
     lines.push('');
-    lines.push('Чтобы посмотреть: /history_show <N> или /history_show <file>');
+    lines.push('Чтобы посмотреть: /history_show 3 или /history_show 2026-01-05_admin_cmds.md');
     await sendLongMessage({ bot, chatId, text: lines.join('\n') });
   });
 

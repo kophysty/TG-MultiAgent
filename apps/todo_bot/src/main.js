@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const TelegramBot = require('node-telegram-bot-api');
+const axios = require('axios');
 
 const { hydrateProcessEnv } = require('../../../core/runtime/env');
 const { NotionTasksRepo } = require('../../../core/connectors/notion/tasks_repo');
@@ -11,6 +12,34 @@ const { createPgPoolFromEnv } = require('../../../core/connectors/postgres/clien
 const { EventLogRepo } = require('../../../core/connectors/postgres/event_log_repo');
 const { registerTodoBot } = require('../../../core/dialogs/todo_bot');
 const { sanitizeErrorForLog } = require('../../../core/runtime/log_sanitize');
+
+function parseAdminChatIds() {
+  const raw = String(process.env.TG_ADMIN_CHAT_IDS || '').trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n));
+}
+
+async function notifyAdminsOnStartupFailure({ token, text }) {
+  const ids = parseAdminChatIds();
+  if (!ids.length) return;
+  for (const chatId of ids) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await axios.post(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        { chat_id: chatId, text: String(text || '') },
+        { timeout: 20_000 }
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
 
 async function main() {
   hydrateProcessEnv();
@@ -63,17 +92,35 @@ async function main() {
   const socialRepo = new NotionSocialRepo({ notionToken, databaseId: socialDbId, eventLogRepo });
   const journalRepo = new NotionJournalRepo({ notionToken, databaseId: journalDbId, eventLogRepo });
 
-  await registerTodoBot({
-    bot,
-    tasksRepo,
-    ideasRepo,
-    socialRepo,
-    journalRepo,
-    databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
-    pgPool,
-    eventLogRepo,
-    botMode: mode,
-  });
+  try {
+    await registerTodoBot({
+      bot,
+      tasksRepo,
+      ideasRepo,
+      socialRepo,
+      journalRepo,
+      databaseIds: { tasks: databaseId, ideas: ideasDbId, social: socialDbId, journal: journalDbId },
+      pgPool,
+      eventLogRepo,
+      botMode: mode,
+    });
+  } catch (e) {
+    const safe = sanitizeErrorForLog(e);
+    await notifyAdminsOnStartupFailure({
+      token,
+      text: [
+        'Todo bot: ошибка запуска.',
+        `- mode: ${mode}`,
+        `- error: ${safe?.code || '-'} ${safe?.message || 'unknown'}`,
+        safe?.description ? `- details: ${safe.description}` : null,
+        '',
+        'Подсказка: проверь сеть/VPN и запусти `node core/runtime/healthcheck.js --json`.',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    });
+    throw e;
+  }
 
   // eslint-disable-next-line no-console
   console.log(`TG-MultiAgent todo bot started. mode=${mode}`);

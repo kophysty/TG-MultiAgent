@@ -7,7 +7,8 @@ All notable changes to this project will be documented in this file.
 - Admin self-diagnostics (todo bot):
   - Added admin-only commands: `/commands`, `/errors`, `/history_list`, `/history_show`, `/history_summary`.
   - Admin chat reply keyboard shows `/commands` instead of `/list` (user chats keep `/list`).
-  - Bumped todo bot version to `v0.1.36`.
+  - Startup resilience: retry Notion getOptions on transient network errors and notify admins on fatal startup errors.
+  - Bumped todo bot version to `v0.1.37`.
 
 - Memory and preferences (MVP):
   - Added Postgres tables for user preferences and a Notion sync queue.
