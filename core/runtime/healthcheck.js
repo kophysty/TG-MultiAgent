@@ -55,6 +55,7 @@ async function checkPostgres() {
     'chat_summaries',
     'memory_suggestions',
     'work_context_cache',
+    'event_log',
   ];
 
   for (const t of tables) {

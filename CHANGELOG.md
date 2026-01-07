@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Chat memory UX (admin):
+  - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
+  - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
+  - Bumped todo bot version to `v0.1.41`.
+
+- Dev: evals (DevHarness для planner):
+  - Добавлен пакет `apps/evals` - CLI для dataset прогонов planner и отчета mismatch (json).
+  - Добавлены ожидания `argsAnyOf`, regex matcher и мягкая нормализация (падежи, регистр, ISO даты) в сравнении.
+  - Добавлены throttle и retry/backoff для 429 и transient сетевых ошибок (для больших прогонов).
+  - Добавлены sample dataset и генератор датасета на 150 кейсов.
+
+- Planner: list vs find:
+  - Запросы вида "покажи задачи про X" и "список задач по слову X" должны идти в `notion.list_tasks` с `args.queryText`, а не в `notion.find_tasks`.
+
+- Voice UX:
+  - Улучшен “status” в чате во время обработки voice (скачивание → ffmpeg → STT → анализ → выполнение) с короткими шагами и эмоджи.
+
 - Todo bot admin (security) команды и диагностика:
   - Admin-only `/commands` (список админских команд).
   - `/errors [hours]` - последние ошибки (Postgres `event_log`) по текущему чату.

@@ -45,5 +45,6 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-05_obs_trace_tests_diag.md` - Observability: trace_id trail + tests + diag bundle
 - `2026-01-05_admin_cmds.md` - Admin команды: /commands, /errors, execution_history summary
 - `2026-01-05_test_tasks_mode_predeploy.md` - Pre-deploy фиксы Docker + режим тестовой Tasks борды (переключатель в клавиатуре, per chat)
+- `2026-01-07_evals_planner.md` - DevHarness (apps/evals) + фиксы planner (list vs find) + датасет 150
 
 

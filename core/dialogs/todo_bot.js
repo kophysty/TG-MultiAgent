@@ -5,6 +5,7 @@ const moment = require('moment');
 const { aiAnalyzeMessage } = require('../ai/todo_intent');
 const todoBotPkg = require('../../apps/todo_bot/package.json');
 const { planAgentAction } = require('../ai/agent_planner');
+const { callChatCompletions } = require('../ai/openai_client');
 const { classifyConfirmIntent } = require('../ai/confirm_intent');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { ChatMemoryRepo } = require('../connectors/postgres/chat_memory_repo');
@@ -157,6 +158,44 @@ function oneLinePreview(text, maxLen) {
     .replace(/\s+/g, ' ')
     .trim();
   return truncate(t, maxLen);
+}
+
+function formatTsInTzShort(ts, tz) {
+  try {
+    const d = ts instanceof Date ? ts : ts ? new Date(ts) : null;
+    if (!d || !Number.isFinite(d.getTime())) return '?';
+    const tzName = String(tz || 'UTC').trim() || 'UTC';
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tzName,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    return `${byType.year}-${byType.month}-${byType.day} ${byType.hour}:${byType.minute}`;
+  } catch {
+    return '?';
+  }
+}
+
+function parseHmToken(s) {
+  const raw = String(s || '').trim();
+  if (!raw) return null;
+  const m = raw.match(/^(\d{1,2})(?:[:.](\d{2}))?$/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = m[2] !== undefined ? Number(m[2]) : 0;
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23) return null;
+  if (mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+
+function pad2(n) {
+  return String(Number(n) || 0).padStart(2, '0');
 }
 
 function splitTelegramText(text, maxLen = 3500) {
@@ -1172,15 +1211,16 @@ async function registerTodoBot({
     }
   }
 
-  function formatChatHistoryForPlanner(rows) {
+  function formatChatHistoryForPlanner(rows, tz) {
     const items = Array.isArray(rows) ? rows : [];
     if (!items.length) return '';
     const lines = [];
     for (const r of items.slice(-30)) {
+      const ts = formatTsInTzShort(r?.created_at || null, tz);
       const role = String(r?.role || '').trim() || 'unknown';
       const text = oneLinePreview(String(r?.text || ''), 220);
       if (!text) continue;
-      lines.push(`${role}: ${text}`);
+      lines.push(`${ts} ${role}: ${text}`);
     }
     return lines.join('\n');
   }
@@ -1194,7 +1234,7 @@ async function registerTodoBot({
         chatMemoryRepo.listLastN({ chatId, limit: lastN }),
       ]);
       const chatSummary = sumRow?.summary ? String(sumRow.summary).trim() : null;
-      const chatHistory = formatChatHistoryForPlanner(rows);
+      const chatHistory = formatChatHistoryForPlanner(rows, tz);
       return {
         chatSummary: chatSummary || null,
         chatHistory: chatHistory || null,
@@ -1202,6 +1242,251 @@ async function registerTodoBot({
     } catch {
       return { chatSummary: null, chatHistory: null };
     }
+  }
+
+  async function loadChatMessagesByLocalRange({ chatId, ymd, fromHm, toHm, maxRows = 300 }) {
+    if (!pgPool || !chatMemoryRepo) return [];
+    const date = String(ymd || '').trim();
+    if (!date) return [];
+    const a = parseHmToken(fromHm);
+    const b = parseHmToken(toHm);
+    if (!a || !b) return [];
+
+    const startLocal = `${date} ${pad2(a.hh)}:${pad2(a.mm)}:00`;
+    let endDate = date;
+    const endLocalSameDay = `${date} ${pad2(b.hh)}:${pad2(b.mm)}:00`;
+    // If end <= start, assume the range crosses midnight -> end is next day.
+    if (endLocalSameDay <= startLocal) {
+      endDate = addDaysToYyyyMmDd(date, 1) || date;
+    }
+    const endLocal = `${endDate} ${pad2(b.hh)}:${pad2(b.mm)}:00`;
+
+    const lim = Math.max(10, Math.min(600, Math.trunc(Number(maxRows) || 300)));
+    const r = await pgPool.query(
+      `select id, role, text, tg_message_id, created_at
+       from chat_messages
+       where chat_id = $1
+         and (created_at at time zone $2) >= $3::timestamp
+         and (created_at at time zone $2) < $4::timestamp
+       order by id asc
+       limit $5`,
+      [Number(chatId), tz, startLocal, endLocal, lim]
+    );
+    return r.rows || [];
+  }
+
+  async function sendChatAtTime({ chatId, ymd, hm, windowMin = 1 }) {
+    const a = parseHmToken(hm);
+    if (!a) {
+      bot.sendMessage(chatId, 'Неверный формат времени. Пример: 04:11');
+      return true;
+    }
+    const date = String(ymd || '').trim() || yyyyMmDdInTz({ tz });
+    const w = Math.max(0, Math.min(15, Math.trunc(Number(windowMin) || 1)));
+    const target = a.hh * 60 + a.mm;
+    const startMm = Math.max(0, target - w);
+    const endMm = Math.min(24 * 60, target + w + 1);
+    const start = { hh: Math.floor(startMm / 60), mm: startMm % 60 };
+    const end = { hh: Math.floor(endMm / 60), mm: endMm % 60 };
+    const rows = await loadChatMessagesByLocalRange({
+      chatId,
+      ymd: date,
+      fromHm: `${pad2(start.hh)}:${pad2(start.mm)}`,
+      toHm: `${pad2(end.hh)}:${pad2(end.mm)}`,
+      maxRows: 250,
+    });
+
+    if (!rows.length) {
+      bot.sendMessage(chatId, `Ничего не нашел около ${date} ${pad2(a.hh)}:${pad2(a.mm)} (±${w}м).`);
+      return true;
+    }
+
+    const lines = [`Сообщения около ${date} ${pad2(a.hh)}:${pad2(a.mm)} (±${w}м):`, ''];
+    for (const r of rows) {
+      const ts = formatTsInTzShort(r?.created_at || null, tz);
+      const role = String(r?.role || 'unknown');
+      const mid = r?.tg_message_id ? `#${r.tg_message_id}` : '-';
+      const text = oneLinePreview(String(r?.text || ''), 420);
+      if (!text) continue;
+      lines.push(`${ts} ${role} ${mid}: ${text}`);
+    }
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+    return true;
+  }
+
+  async function sendChatSummaryRange({ chatId, ymd, fromHm, toHm }) {
+    const date = String(ymd || '').trim() || yyyyMmDdInTz({ tz });
+    const rows = await loadChatMessagesByLocalRange({ chatId, ymd: date, fromHm, toHm, maxRows: 400 });
+    if (!rows.length) {
+      bot.sendMessage(chatId, `Нечего суммаризировать: сообщений нет за ${date} ${fromHm}–${toHm}.`);
+      return true;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      bot.sendMessage(chatId, 'OPENAI_API_KEY не найден. Не могу сделать саммари. Могу показать сообщения: /chat_history 80');
+      return true;
+    }
+
+    const model = process.env.TG_CHAT_SUMMARY_MODEL || 'gpt-4.1-mini';
+    const transcriptLines = [];
+    for (const r of rows.slice(0, 350)) {
+      const ts = formatTsInTzShort(r?.created_at || null, tz);
+      const role = String(r?.role || 'unknown');
+      const text = oneLinePreview(String(r?.text || ''), 500);
+      if (!text) continue;
+      transcriptLines.push(`${ts} ${role}: ${text}`);
+    }
+
+    const messages = [
+      {
+        role: 'system',
+        content: [
+          'Ты помощник, который делает краткую сводку переписки в Telegram.',
+          'Используй ТОЛЬКО предоставленные сообщения. Не выдумывай факты.',
+          'Верни JSON строго в формате:',
+          '{"summary":"...","highlights":["..."],"open_questions":["..."],"action_items":["..."]}',
+          'Пиши по-русски. Коротко, но конкретно.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Сделай сводку за период: ${date} ${fromHm}–${toHm} (${tz}).`,
+          `Сообщений: ${rows.length}.`,
+          '',
+          transcriptLines.join('\n'),
+        ].join('\n'),
+      },
+    ];
+
+    let parsed = null;
+    try {
+      const raw = await callChatCompletions({ apiKey, model, messages, temperature: 0.2 });
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось сделать саммари (LLM). Ошибка: ${String(e?.message || e)}`);
+      return true;
+    }
+
+    const summary = parsed && parsed.summary ? String(parsed.summary).trim() : '';
+    const highlights = Array.isArray(parsed?.highlights) ? parsed.highlights.map((x) => String(x)).filter((x) => x.trim()) : [];
+    const openQ = Array.isArray(parsed?.open_questions) ? parsed.open_questions.map((x) => String(x)).filter((x) => x.trim()) : [];
+    const actions = Array.isArray(parsed?.action_items) ? parsed.action_items.map((x) => String(x)).filter((x) => x.trim()) : [];
+
+    const out = [];
+    out.push(`Сводка: ${date} ${fromHm}–${toHm} (${tz})`);
+    out.push(`- сообщений: ${rows.length}`);
+    out.push('');
+    if (summary) out.push(summary);
+    if (highlights.length) {
+      out.push('');
+      out.push('Ключевое:');
+      for (const h of highlights.slice(0, 10)) out.push(`- ${h}`);
+    }
+    if (actions.length) {
+      out.push('');
+      out.push('Action items:');
+      for (const a of actions.slice(0, 10)) out.push(`- ${a}`);
+    }
+    if (openQ.length) {
+      out.push('');
+      out.push('Открытые вопросы:');
+      for (const q of openQ.slice(0, 10)) out.push(`- ${q}`);
+    }
+    await sendLongMessage({ bot, chatId, text: out.join('\n') });
+    return true;
+  }
+
+  async function maybeHandleAdminChatMemoryNaturalLanguage({ chatId, text }) {
+    if (!chatSecurity.isAdminChat(chatId)) return false;
+    if (!pgPool || !chatMemoryRepo) return false;
+    if (!(await isChatMemoryEnabledForChat(chatId))) return false;
+
+    const t = String(text || '').trim();
+    if (!t) return false;
+    const low = t.toLowerCase();
+
+    // "покажи сообщения в 04:11"
+    const at = low.match(/\b(?:в|во)\s*(\d{1,2}[:.]\d{2})\b/);
+    if (/(сообщен)/.test(low) && at && at[1]) {
+      return await sendChatAtTime({ chatId, ymd: yyyyMmDdInTz({ tz }), hm: at[1], windowMin: 1 });
+    }
+
+    // "саммари с 2 до 3" / "с 02:00 до 03:00"
+    const range = low.match(/с\s*(\d{1,2}(?:[:.]\d{2})?)\s*до\s*(\d{1,2}(?:[:.]\d{2})?)/);
+    if (/(саммари|сводк|резюм|summary)/.test(low) && range && range[1] && range[2]) {
+      const a = parseHmToken(range[1]);
+      const b = parseHmToken(range[2]);
+      if (!a || !b) return false;
+      return await sendChatSummaryRange({
+        chatId,
+        ymd: yyyyMmDdInTz({ tz }),
+        fromHm: `${pad2(a.hh)}:${pad2(a.mm)}`,
+        toHm: `${pad2(b.hh)}:${pad2(b.mm)}`,
+      });
+    }
+
+    // "рандомные/случайные сообщения"
+    if (/(рандом|случайн)/.test(low) && /(сообщен)/.test(low)) {
+      let rows = [];
+      try {
+        rows = await chatMemoryRepo.listLastN({ chatId, limit: 200 });
+      } catch {
+        rows = [];
+      }
+      if (!rows.length) {
+        bot.sendMessage(chatId, '(chat memory пустая)');
+        return true;
+      }
+      const pickN = Math.min(12, Math.max(3, Math.trunc(rows.length >= 12 ? 10 : rows.length)));
+      const out = [];
+      const used = new Set();
+      while (out.length < pickN && used.size < rows.length) {
+        const idx = Math.floor(Math.random() * rows.length);
+        if (used.has(idx)) continue;
+        used.add(idx);
+        out.push(rows[idx]);
+      }
+      const lines = [`Случайные сообщения (из последних ${rows.length}):`, ''];
+      for (const r of out) {
+        const ts = formatTsInTzShort(r?.created_at || null, tz);
+        const role = String(r?.role || 'unknown');
+        const mid = r?.tg_message_id ? `#${r.tg_message_id}` : '-';
+        const text = oneLinePreview(String(r?.text || ''), 400);
+        if (!text) continue;
+        lines.push(`${ts} ${role} ${mid}: ${text}`);
+      }
+      await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+      return true;
+    }
+
+    // If user asks to "покажи сообщения" without time, show last 30.
+    if (/(покажи|выведи).*(сообщен)/.test(low)) {
+      let rows = [];
+      try {
+        rows = await chatMemoryRepo.listLastN({ chatId, limit: 30 });
+      } catch {
+        rows = [];
+      }
+      if (!rows.length) {
+        bot.sendMessage(chatId, '(chat memory пустая)');
+        return true;
+      }
+      const lines = [`Chat history (последние ${rows.length}):`, ''];
+      for (const r of rows) {
+        const ts = formatTsInTzShort(r?.created_at || null, tz);
+        const role = String(r?.role || 'unknown');
+        const mid = r?.tg_message_id ? `#${r.tg_message_id}` : '-';
+        const text = oneLinePreview(String(r?.text || ''), 400);
+        if (!text) continue;
+        lines.push(`${ts} ${role} ${mid}: ${text}`);
+      }
+      await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+      return true;
+    }
+
+    return false;
   }
 
   function shouldInjectWorkContext(userText) {
@@ -1701,6 +1986,10 @@ async function registerTodoBot({
       '',
       '- /commands - показать этот список',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
+      '- /chat_history [N] - показать последние N сообщений из chat memory (по умолчанию 30)',
+      '- /chat_find <text> - поиск по chat memory (последние ~200 сообщений)',
+      '- /chat_at HH:MM [windowMin] - показать сообщения около времени (пример: /chat_at 04:11)',
+      '- /chat_summary HH:MM HH:MM - саммари сообщений за диапазон (пример: /chat_summary 02:00 03:00)',
       '- /history_list N - список файлов в execution_history (пример: /history_list 20)',
       '- /history_show N - показать конспект sprint файла по номеру из /history_list (пример: /history_show 3)',
       '- /history_show 2026-01-05_test_tasks_mode_predeploy.md - показать конспект по имени файла',
@@ -1780,6 +2069,162 @@ async function registerTodoBot({
     }
 
     await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/chat_history(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool || !chatMemoryRepo) {
+      bot.sendMessage(chatId, 'Chat memory недоступна. Проверь POSTGRES_URL и миграцию infra/db/migrations/006_chat_memory.sql.');
+      return;
+    }
+    if (!(await isChatMemoryEnabledForChat(chatId))) {
+      bot.sendMessage(chatId, 'Chat memory отключена для этого чата (preference: chat_memory_enabled).');
+      return;
+    }
+
+    const nRaw = match && match[1] ? Number(match[1]) : 30;
+    const n = Number.isFinite(nRaw) ? Math.max(5, Math.min(80, Math.trunc(nRaw))) : 30;
+    let rows = [];
+    try {
+      rows = await chatMemoryRepo.listLastN({ chatId, limit: n });
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось прочитать chat_messages. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+    if (!rows.length) {
+      bot.sendMessage(chatId, '(chat memory пустая)');
+      return;
+    }
+
+    const lines = [`Chat history (последние ${rows.length}):`, ''];
+    for (const r of rows) {
+      const ts = formatTsInTzShort(r?.created_at || null, tz);
+      const role = String(r?.role || 'unknown');
+      const mid = r?.tg_message_id ? `#${r.tg_message_id}` : '-';
+      const text = oneLinePreview(String(r?.text || ''), 400);
+      if (!text) continue;
+      lines.push(`${ts} ${role} ${mid}: ${text}`);
+    }
+    lines.push('');
+    lines.push('Подсказка: /chat_find слово');
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/chat_find(?:\s+(.+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool || !chatMemoryRepo) {
+      bot.sendMessage(chatId, 'Chat memory недоступна. Проверь POSTGRES_URL и миграцию infra/db/migrations/006_chat_memory.sql.');
+      return;
+    }
+    if (!(await isChatMemoryEnabledForChat(chatId))) {
+      bot.sendMessage(chatId, 'Chat memory отключена для этого чата (preference: chat_memory_enabled).');
+      return;
+    }
+
+    const q = match && match[1] ? String(match[1]).trim() : '';
+    if (!q) {
+      bot.sendMessage(chatId, 'Укажи текст для поиска. Пример: /chat_find execution_history');
+      return;
+    }
+
+    let rows = [];
+    try {
+      const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+      const r = await pgPool.query(
+        `select role, text, tg_message_id, created_at
+         from chat_messages
+         where chat_id = $1
+           and text ilike $2 escape '\\\\'
+         order by id desc
+         limit 30`,
+        [chatId, like]
+      );
+      rows = r.rows || [];
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось сделать поиск по chat_messages. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+
+    if (!rows.length) {
+      bot.sendMessage(chatId, `Ничего не нашел по: "${truncate(q, 40)}"`);
+      return;
+    }
+
+    const lines = [`Chat find: "${truncate(q, 60)}" (первые ${rows.length}):`, ''];
+    for (const r of rows) {
+      const ts = formatTsInTzShort(r?.created_at || null, tz);
+      const role = String(r?.role || 'unknown');
+      const mid = r?.tg_message_id ? `#${r.tg_message_id}` : '-';
+      const text = oneLinePreview(String(r?.text || ''), 400);
+      if (!text) continue;
+      lines.push(`${ts} ${role} ${mid}: ${text}`);
+    }
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/chat_at(?:\s+(\d{1,2}[:.]\d{2})(?:\s+(\d{1,2}))?)?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool || !chatMemoryRepo) {
+      bot.sendMessage(chatId, 'Chat memory недоступна. Проверь POSTGRES_URL и миграцию infra/db/migrations/006_chat_memory.sql.');
+      return;
+    }
+    if (!(await isChatMemoryEnabledForChat(chatId))) {
+      bot.sendMessage(chatId, 'Chat memory отключена для этого чата (preference: chat_memory_enabled).');
+      return;
+    }
+    const hm = match && match[1] ? String(match[1]).trim() : '';
+    const w = match && match[2] ? Number(match[2]) : 1;
+    if (!hm) {
+      bot.sendMessage(chatId, 'Укажи время. Пример: /chat_at 04:11');
+      return;
+    }
+    await sendChatAtTime({ chatId, ymd: yyyyMmDdInTz({ tz }), hm, windowMin: w });
+  });
+
+  bot.onText(/^\/chat_summary(?:\s+(\d{1,2}(?:[:.]\d{2})?)\s+(\d{1,2}(?:[:.]\d{2})?))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool || !chatMemoryRepo) {
+      bot.sendMessage(chatId, 'Chat memory недоступна. Проверь POSTGRES_URL и миграцию infra/db/migrations/006_chat_memory.sql.');
+      return;
+    }
+    if (!(await isChatMemoryEnabledForChat(chatId))) {
+      bot.sendMessage(chatId, 'Chat memory отключена для этого чата (preference: chat_memory_enabled).');
+      return;
+    }
+
+    const aRaw = match && match[1] ? String(match[1]).trim() : '';
+    const bRaw = match && match[2] ? String(match[2]).trim() : '';
+    if (!aRaw || !bRaw) {
+      bot.sendMessage(chatId, 'Укажи диапазон. Пример: /chat_summary 02:00 03:00');
+      return;
+    }
+    const a = parseHmToken(aRaw);
+    const b = parseHmToken(bRaw);
+    if (!a || !b) {
+      bot.sendMessage(chatId, 'Неверный формат времени. Пример: /chat_summary 02:00 03:00');
+      return;
+    }
+    await sendChatSummaryRange({ chatId, ymd: yyyyMmDdInTz({ tz }), fromHm: `${pad2(a.hh)}:${pad2(a.mm)}`, toHm: `${pad2(b.hh)}:${pad2(b.mm)}` });
   });
 
   bot.onText(/^\/history_list(?:\s+(\d+))?\s*$/i, async (msg, match) => {
@@ -2206,6 +2651,7 @@ async function registerTodoBot({
             sourceMessageId,
           });
         },
+        handleAdminChatMemoryQuery: async ({ text } = {}) => await maybeHandleAdminChatMemoryNaturalLanguage({ chatId, text }),
       });
       return;
     }
@@ -2370,6 +2816,7 @@ async function registerTodoBot({
     }
 
     // Agent planner: try tool-based action first.
+    if (await maybeHandleAdminChatMemoryNaturalLanguage({ chatId, text })) return;
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
     try {
       const lastShown = lastShownListByChatId.get(chatId) || [];

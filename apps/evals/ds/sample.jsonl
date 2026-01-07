@@ -1,0 +1,6 @@
+{"id":"t1","userText":"покажи задачи на сегодня","expected":{"type":"tool","toolName":"notion.list_tasks","args":{"preset":"today"}}}
+{"id":"t2","userText":"добавь задачу купить молоко","expected":{"type":"tool","toolName":"notion.create_task","args":{"title":"купить молоко"},"compare":{"ignoreCasePaths":["tool.args.title"]}}}
+{"id":"t3","userText":"пометь выполненной задачу номер 2","expected":{"type":"tool","toolName":"notion.mark_done","args":{"taskIndex":2}}}
+{"id":"t4","userText":"покажи выполненные задачи","expected":{"type":"tool","toolName":"notion.list_tasks","argsAnyOf":[{"doneOnly":true},{"status":"Done"}]}}
+{"id":"t5","userText":"добавь запись в дневник: сегодня был продуктивный день","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+

@@ -22,6 +22,24 @@ const {
   isJournalUpdateIntent,
 } = require('./todo_bot_helpers');
 
+function renderVoiceStatus({ stage, transcriptPreview = null }) {
+  // Keep it plain text (no Markdown) to avoid escaping issues.
+  // Telegram doesn't allow styling the bubble itself, but emojis + concise text improve readability.
+  const st = String(stage || '').trim().toLowerCase();
+  if (st === 'downloading') return '🎙️ Голос: ⬇️ скачиваю…';
+  if (st === 'converting') return '🎙️ Голос: 🔁 конвертирую (ffmpeg)…';
+  if (st === 'stt') return '🎙️ Голос: 🧠 распознаю (STT)…';
+  if (st === 'planning') return '🎙️ Голос: 🤖 анализирую…';
+  if (st === 'executing') return '🎙️ Голос: ⚡ выполняю…';
+  if (st === 'no_text') return '🎙️ Голос: ⚠️ не удалось распознать текст.';
+  if (st === 'error') return '🎙️ Голос: ❌ ошибка при обработке.';
+  if (st === 'done') {
+    const p = transcriptPreview ? String(transcriptPreview).trim() : '';
+    return p ? `🎙️ Распознано: ${p}` : '🎙️ Готово.';
+  }
+  return '🎙️ Голос: …';
+}
+
 async function handleVoiceMessage({
   bot,
   msg,
@@ -39,6 +57,7 @@ async function handleVoiceMessage({
   getPlannerContext = null, // async () => ({ memorySummary, chatSummary, chatHistory, workContext })
   appendUserTextToChatMemory = null, // async ({ text, tgMessageId })
   maybeSuggestPreferenceFromText = null, // async ({ chatId, userText, sourceMessageId })
+  handleAdminChatMemoryQuery = null, // async ({ text }) => boolean (admin-only, reads from Postgres chat memory)
 }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -56,7 +75,7 @@ async function handleVoiceMessage({
     file_unique_id: msg.voice.file_unique_id || null,
   });
 
-  const statusMsg = await bot.sendMessage(chatId, 'Voice: скачиваю...');
+  const statusMsg = await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'downloading' }));
   const statusMessageId = statusMsg?.message_id;
 
   let transcriptPreview = null;
@@ -67,11 +86,11 @@ async function handleVoiceMessage({
     didFinalizeStatus = true;
     if (!statusMessageId || !transcriptPreview) return;
     try {
-      await bot.editMessageText(`Распознано: ${transcriptPreview}`, { chat_id: chatId, message_id: statusMessageId });
+      await bot.editMessageText(renderVoiceStatus({ stage: 'done', transcriptPreview }), { chat_id: chatId, message_id: statusMessageId });
     } catch {
       // If we cannot edit the status message (rate limit, message deleted, etc), send a small fallback message.
       try {
-        await bot.sendMessage(chatId, `Распознано: ${transcriptPreview}`);
+        await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'done', transcriptPreview }));
       } catch {}
     }
   };
@@ -84,22 +103,36 @@ async function handleVoiceMessage({
     oggPath = dl.outPath;
     debugLog('voice_downloaded', { chatId, bytes: fs.statSync(oggPath).size });
 
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: конвертирую (ffmpeg)...' });
+    if (statusMessageId)
+      await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'converting' }) });
     const conv = await convertOggToWav16kMono({ inputPath: oggPath });
     wavPath = conv.wavPath;
 
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: распознаю (STT)...' });
+    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'stt' }) });
     const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang });
     const transcript = stt.text;
 
     debugLog('voice_transcribed', { chatId, text_len: transcript.length, text_preview: transcript.slice(0, 80) });
 
     if (!transcript) {
-      if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: не удалось распознать текст.' });
+      if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'no_text' }) });
       return;
     }
 
     transcriptPreview = oneLinePreview(transcript, 90);
+
+    // Admin-only: handle chat memory queries deterministically (range/time) before planner.
+    if (typeof handleAdminChatMemoryQuery === 'function') {
+      try {
+        const handled = await handleAdminChatMemoryQuery({ text: transcript });
+        if (handled) {
+          await finalizeStatus();
+          return;
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     // Best-effort: store voice transcript as a user message in chat memory.
     if (typeof appendUserTextToChatMemory === 'function') {
@@ -123,7 +156,7 @@ async function handleVoiceMessage({
         .catch(() => {});
     }
 
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: формирую задачу...' });
+    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'planning' }) });
 
     // Voice transcript should go through the same planner->tools path as text messages.
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
@@ -178,7 +211,7 @@ async function handleVoiceMessage({
       }
 
       if (plan.type === 'tool') {
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: выполняю...' });
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'executing' }) });
         await executeToolPlan({ chatId, from, toolName: plan.tool.name, args: plan.tool.args, userText: transcript });
         await finalizeStatus();
         return;
@@ -203,7 +236,7 @@ async function handleVoiceMessage({
               ? { queryText: null, autofill: true }
               : { queryText: null };
 
-        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: выполняю...' });
+        if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'executing' }) });
         await executeToolPlan({ chatId, from, toolName, args, userText: transcript });
         await finalizeStatus();
         return;
@@ -252,7 +285,7 @@ async function handleVoiceMessage({
     bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
   } catch (e) {
     debugLog('voice_error', { chatId, message: String(e?.message || e) });
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: 'Voice: ошибка при обработке.' });
+    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'error' }) });
     bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
   } finally {
     // Best-effort: always show the transcript preview, even if we returned early due to confirmation flows.

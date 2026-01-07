@@ -197,4 +197,22 @@
 - Agent safety:
   - Добавлено правило: никогда не делать откаты (rollback/revert/reset/cherry-pick/force-push и т.п.) без явного согласования пользователя.
 
+- Voice UX:
+  - Улучшен “status” в чате во время обработки voice (скачивание → ffmpeg → STT → анализ → выполнение) с короткими шагами и эмоджи.
+
+- Chat memory UX (admin):
+  - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
+  - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
+  - Bumped todo bot version to `v0.1.41`.
+
+## 2026-01-07
+
+- Dev: evals (DevHarness для planner):
+  - Добавлен пакет `apps/evals` - CLI для dataset прогонов planner и отчета mismatch.
+  - Добавлены retry/backoff и throttle для стабильных больших прогонов (защита от 429).
+  - Подготовлен датасет на 150 кейсов (утро и около 12:00) для проверки поведения.
+
+- Planner: list vs find:
+  - Запросы вида "покажи задачи про X" и "список задач по слову X" теперь должны выбирать `notion.list_tasks` с `args.queryText` (вместо `notion.find_tasks`).
+
 

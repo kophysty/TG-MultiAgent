@@ -43,3 +43,6 @@ sources/
 
 # Diagnostic bundles (generated locally)
 data/diag/
+
+# Evals reports (generated locally)
+data/evals/
