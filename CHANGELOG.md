@@ -7,7 +7,10 @@ All notable changes to this project will be documented in this file.
 - Chat memory UX (admin):
   - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
   - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
-  - Bumped todo bot version to `v0.1.41`.
+  - Bumped todo bot version to `v0.1.42`.
+
+- Tasks fuzzy resolve:
+  - Улучшен fuzzy-match для voice случаев, когда слова “склеены” (например `testworktask`), чтобы не показывать нерелевантный длинный список кандидатов.
 
 - Dev: evals (DevHarness для planner):
   - Добавлен пакет `apps/evals` - CLI для dataset прогонов planner и отчета mismatch (json).

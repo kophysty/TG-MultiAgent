@@ -658,7 +658,8 @@ function tokenToTokenFuzzyScore(queryNorm, titleNorm) {
     .split(' ')
     .map((x) => x.trim())
     .filter((x) => x.length >= 3)
-    .filter((x) => /[a-z]/i.test(x));
+    .filter((x) => /[a-z]/i.test(x))
+    .filter((x) => !STOP.has(x));
   if (!qTokens.length || !tTokens.length) return 0;
 
   let sum = 0;
@@ -666,7 +667,10 @@ function tokenToTokenFuzzyScore(queryNorm, titleNorm) {
   for (const qt of qTokens) {
     let best = 0;
     for (const tt of tTokens) {
-      const sim = similarityRatio(qt, tt);
+      let sim = similarityRatio(qt, tt);
+      // Special case: voice often glues words together (e.g. "testworktask" instead of "test work task").
+      // If the query token is long enough, treat "contains" as a perfect hit for non-stopword title tokens.
+      if (qt.length >= 8 && tt.length >= 4 && qt.includes(tt)) sim = 1;
       if (sim > best) best = sim;
       if (best >= 0.92) break;
     }
