@@ -350,7 +350,7 @@ function createCallbackQueryHandler({
       if (act === 'reject') {
         await suggestionsRepo.decideSuggestion({ id: suggestionId, chatId, status: 'rejected' });
         bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Ок, не буду сохранять.');
+        bot.sendMessage(chatId, 'Ок, не сохраняю.');
         return;
       }
 
@@ -411,7 +411,7 @@ function createCallbackQueryHandler({
         await suggestionsRepo.decideSuggestion({ id: suggestionId, chatId, status: 'accepted' });
 
         bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, `Сохранил preference: ${key} - ${oneLinePreview(valueHuman, 120)}`);
+        bot.sendMessage(chatId, `Ок, сохранил: ${key} - ${oneLinePreview(valueHuman, 120)}`);
         return;
       }
 

@@ -17,17 +17,20 @@
 
 - Ежедневный дайджест в `TG_REMINDERS_DAILY_AT` (по умолчанию `11:00`):
   - задачи, у которых due date попадает в текущие сутки (в `TG_TZ`), включая due datetime с временем
-  - плюс задачи из `Inbox`
+  - плюс задачи из `Inbox` без due date или с due date не позже сегодняшнего дня (просроченные включаем)
   - исключаем `Done` и `Deprecated`
   - формат: отдельные блоки "С дедлайном сегодня" и "Inbox"
+  - включает блок "Посты сегодня" из Social Media Planner (исключаем `Published` и `Cancelled`)
   - отправляется без звука (silent) в Telegram
 
 - Для задач с due date без времени (date-only):
   - напоминание накануне события в `TG_REMINDERS_DAY_BEFORE_AT` (по умолчанию `23:00`)
   - берутся задачи, у которых due date = завтра и поле due date не содержит времени
+  - также включает посты из Social Media Planner на завтра без времени (date-only), исключая `Published` и `Cancelled`
 
 - Для задач с due date и временем:
   - напоминание за `TG_REMINDERS_BEFORE_MINUTES` минут (по умолчанию `60`) до due datetime
+  - также напоминание за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов из Social Media Planner (исключая `Published` и `Cancelled`)
 
 ## Дедупликация (без дублей)
 

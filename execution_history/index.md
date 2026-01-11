@@ -46,5 +46,7 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-05_admin_cmds.md` - Admin команды: /commands, /errors, execution_history summary
 - `2026-01-05_test_tasks_mode_predeploy.md` - Pre-deploy фиксы Docker + режим тестовой Tasks борды (переключатель в клавиатуре, per chat)
 - `2026-01-07_evals_planner.md` - DevHarness (apps/evals) + фиксы planner (list vs find) + датасет 150
+- `2026-01-11_llm_args_normalize.md` - Нормализация args tool планов для совместимости между моделями + bump версии todo bot до 0.2.0
+- `2026-01-12_prefs_models_pg.md` - Preferences UX (Да/Нет) + /prefs_pg + /model + контроль модели через TG_AI_MODEL/AI_MODEL
 
 

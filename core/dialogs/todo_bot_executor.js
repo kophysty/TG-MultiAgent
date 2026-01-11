@@ -136,8 +136,11 @@ function createToolExecutor({
           } else {
             const byDate = await tasksRepoForChat.listTasks({ dueDate: today, status: queryStatus, limit: 100 });
             const inbox = await tasksRepoForChat.listTasks({ tag: 'Inbox', status: queryStatus, limit: 100 });
+            // For "today" preset: include Inbox only if it has no due date or is due today or earlier (overdue).
+            // This prevents "tasks for today" from showing future-dated Inbox items (like due tomorrow).
+            const inboxFiltered = (inbox || []).filter((t) => !t?.dueDate || String(t.dueDate).slice(0, 10) <= today);
             const seen = new Set();
-            for (const x of [...byDate, ...inbox]) {
+            for (const x of [...byDate, ...inboxFiltered]) {
               if (!x || !x.id) continue;
               if (seen.has(x.id)) continue;
               seen.add(x.id);

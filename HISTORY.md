@@ -218,4 +218,29 @@
 - Planner: list vs find:
   - Запросы вида "покажи задачи про X" и "список задач по слову X" теперь должны выбирать `notion.list_tasks` с `args.queryText` (вместо `notion.find_tasks`).
 
+## 2026-01-11
+
+- Admin UI:
+  - В админской клавиатуре кнопка сокращена до `/cmnds` (алиас: `/commands`), чтобы помещалось на телефоне.
+  - Bumped todo bot version to `v0.2.1`.
+
+- Today semantics:
+  - В выводе "на сегодня" (`/today` и AI preset today) `Inbox` задачи с due date в будущем больше не показываются.
+
+- Telegram polling:
+  - При `409 Conflict` (другая инстанция бота делает getUpdates) отправляем предупреждение в админ-чат и останавливаем polling в текущем процессе.
+
+- Voice:
+  - Улучшена диагностика ошибок voice (stage, HTTP status) и добавлен fallback моделей STT при проблемах доступа к `whisper-1`.
+
+- Preferences UX and diagnostics:
+  - Подтверждение сохранения preference: короткий вопрос и кнопки Да/Нет.
+  - Добавлены админ-команды `/prefs_pg` и `/model` для детерминированной диагностики (Postgres и модели).
+  - Явное управление моделью через `TG_AI_MODEL` (и алиас `AI_MODEL`).
+
+- Reminders:
+  - Утренний дайджест включает "Посты сегодня" из Social Media Planner (исключая `Published` и `Cancelled`).
+  - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
+  - Bumped reminders worker version to `v0.1.7`.
+
 

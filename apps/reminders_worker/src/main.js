@@ -86,6 +86,13 @@ function isDeprecated(task) {
   return Array.isArray(task?.tags) && task.tags.some((t) => String(t).trim().toLowerCase() === 'deprecated');
 }
 
+function isSocialExcluded(post) {
+  const s = String(post?.status || '').trim().toLowerCase();
+  if (!s) return false;
+  // Keep consistent with todo bot list defaults: exclude published/cancelled from reminders.
+  return s === 'published' || s === 'cancelled' || s === 'canceled';
+}
+
 function uniqById(tasks) {
   const out = [];
   const seen = new Set();
@@ -115,9 +122,28 @@ function formatTimeInTz(isoOrDate, tz) {
   }).format(d);
 }
 
-function buildDailySummaryText({ tz, today, dueTasks, inboxTasks }) {
+function formatSocialPostsForDigest({ posts, tz }) {
+  const items = (posts || []).slice(0, 30);
+  if (!items.length) return '(пусто)';
+  const lines = [];
+  for (const p of items) {
+    const hhmm = p.postDate && !isDateOnly(p.postDate) ? formatTimeInTz(p.postDate, tz) : null;
+    const plats = Array.isArray(p.platform) && p.platform.length ? ` [${p.platform.join(', ')}]` : '';
+    const timePart = hhmm ? `${hhmm} - ` : '';
+    lines.push(`- ${timePart}${p.title}${plats}`);
+  }
+  return lines.join('\n');
+}
+
+function buildDailySummaryText({ tz, today, dueTasks, inboxTasks, socialPostsToday = [] }) {
   const due = (dueTasks || []).filter((t) => !isDone(t) && !isDeprecated(t));
-  const inbox = (inboxTasks || []).filter((t) => !isDone(t) && !isDeprecated(t));
+  // Align with /today semantics: include Inbox only if it has no due date or is due today or earlier (overdue).
+  const inbox = (inboxTasks || []).filter(
+    (t) =>
+      !isDone(t) &&
+      !isDeprecated(t) &&
+      (!t?.dueDate || String(t.dueDate).slice(0, 10) <= String(today || '').slice(0, 10))
+  );
 
   const timed = [];
   const dateOnly = [];
@@ -153,6 +179,10 @@ function buildDailySummaryText({ tz, today, dueTasks, inboxTasks }) {
       lines.push(`- ${t.title}`);
     }
   }
+
+  lines.push('');
+  lines.push('Посты сегодня:');
+  lines.push(formatSocialPostsForDigest({ posts: socialPostsToday, tz }));
 
   return lines.join('\n');
 }
@@ -498,20 +528,35 @@ async function main() {
     const now = new Date();
     const today = yyyyMmDdInTz(tz, now);
     const tomorrow = addDaysYyyyMmDd(today, 1);
+    const dayAfterTomorrow = addDaysYyyyMmDd(today, 2);
 
     // Pull tasks for today/tomorrow and Inbox.
     // Use a day-range query for "today" to include both date-only and datetime tasks in the local timezone.
     const dayStartUtc = zonedWallClockToUtc({ tz, yyyyMmDd: today, h: 0, min: 0 });
     const nextDayStartUtc = zonedWallClockToUtc({ tz, yyyyMmDd: tomorrow, h: 0, min: 0 });
 
-    const [dueToday, dueTomorrow, inbox] = await Promise.all([
+    const [dueToday, dueTomorrow, inbox, socialRange] = await Promise.all([
       notionRepo.listTasks({ dueDateOnOrAfter: dayStartUtc.toISOString(), dueDateBefore: nextDayStartUtc.toISOString(), limit: 100 }),
       notionRepo.listTasks({ dueDate: tomorrow, limit: 100 }),
       notionRepo.listTasks({ tag: 'Inbox', limit: 100 }),
+      socialRepo
+        ? socialRepo.listPosts({
+            requireDate: true,
+            excludeStatuses: ['Published', 'Cancelled', 'Canceled'],
+            dateOnOrAfter: today,
+            dateBefore: dayAfterTomorrow,
+            limit: 100,
+          })
+        : Promise.resolve([]),
     ]);
 
     const tasksToday = uniqById([...dueToday, ...inbox]).filter((t) => !isDone(t) && !isDeprecated(t));
     const tasksTomorrowDateOnly = uniqById(dueTomorrow).filter((t) => !isDone(t) && !isDeprecated(t) && isDateOnly(t.dueDate));
+
+    const socialActive = uniqById(socialRange).filter((p) => p?.postDate && !isSocialExcluded(p));
+    const socialToday = socialActive.filter((p) => String(p.postDate).slice(0, 10) === today);
+    const socialTomorrow = socialActive.filter((p) => String(p.postDate).slice(0, 10) === tomorrow);
+    const socialTomorrowDateOnly = socialTomorrow.filter((p) => isDateOnly(p.postDate));
 
     const subs = await repo.listEnabledSubscriptions();
     if (!subs.length) return;
@@ -547,6 +592,7 @@ async function main() {
             today,
             dueTasks: dueToday,
             inboxTasks: inbox,
+            socialPostsToday: socialToday,
           });
           try {
             // Daily digest should be silent by default (no notification sound).
@@ -558,7 +604,7 @@ async function main() {
       }
 
       // day before digest for date-only tasks due tomorrow
-      if (now >= dayBeforeWindowStart && now < dayBeforeWindowEnd && tasksTomorrowDateOnly.length) {
+      if (now >= dayBeforeWindowStart && now < dayBeforeWindowEnd && (tasksTomorrowDateOnly.length || socialTomorrowDateOnly.length)) {
         const remindAt = dayBeforeAtUtc;
         const inserted = await repo.tryInsertSentReminder({
           chatId,
@@ -567,7 +613,17 @@ async function main() {
           remindAt,
         });
         if (inserted) {
-          const text = `Напоминание (завтра):\n\n${formatTasksList(tasksTomorrowDateOnly)}`;
+          const parts = ['Напоминание (завтра):', ''];
+          if (tasksTomorrowDateOnly.length) {
+            parts.push('Задачи:');
+            parts.push(formatTasksList(tasksTomorrowDateOnly));
+          }
+          if (socialTomorrowDateOnly.length) {
+            if (tasksTomorrowDateOnly.length) parts.push('');
+            parts.push('Посты:');
+            parts.push(formatSocialPostsForDigest({ posts: socialTomorrowDateOnly, tz }));
+          }
+          const text = parts.join('\n');
           try {
             await tg.sendMessage(chatId, text);
           } catch {
@@ -597,6 +653,32 @@ async function main() {
           await tg.sendMessage(chatId, text);
         } catch {
           await repo.deleteSentReminder({ chatId, pageId: t.id, reminderKind: 'before_60m', remindAt });
+        }
+      }
+
+      // before Post date (per social post)
+      const socialTimedCandidates = uniqById([...socialToday, ...socialTomorrow]).filter((p) => p?.postDate && !isDateOnly(p.postDate));
+      for (const p of socialTimedCandidates) {
+        const due = new Date(String(p.postDate));
+        if (!Number.isFinite(due.getTime())) continue;
+        const remindAt = new Date(due.getTime() - beforeMinutes * 60_000);
+        if (!(now >= remindAt && now < new Date(remindAt.getTime() + pollSeconds * 1000))) continue;
+
+        const inserted = await repo.tryInsertSentReminder({
+          chatId,
+          pageId: `social:${p.id}`,
+          reminderKind: 'social_before_60m',
+          remindAt,
+        });
+        if (!inserted) continue;
+
+        const hhmm = formatTimeInTz(p.postDate, tz);
+        const plats = Array.isArray(p.platform) && p.platform.length ? ` [${p.platform.join(', ')}]` : '';
+        const text = `Напоминание: пост через ${beforeMinutes} минут\n\n${hhmm ? `${hhmm} - ` : ''}${p.title}${plats}`;
+        try {
+          await tg.sendMessage(chatId, text);
+        } catch {
+          await repo.deleteSentReminder({ chatId, pageId: `social:${p.id}`, reminderKind: 'social_before_60m', remindAt });
         }
       }
     }

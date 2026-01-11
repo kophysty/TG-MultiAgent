@@ -1070,7 +1070,10 @@ async function registerTodoBot({
   const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }] (journal)
   const lastShownHistoryByChatId = new Map(); // chatId -> [{ index, file }] (execution_history)
   const tz = process.env.TG_TZ || 'Europe/Moscow';
-  const aiModel = process.env.TG_AI_MODEL || 'gpt-4.1';
+  // Model control:
+  // - Preferred: TG_AI_MODEL (documented)
+  // - Backward/CLI alias: AI_MODEL
+  const aiModel = process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1';
   const PRIORITY_SET = new Set(PRIORITY_OPTIONS.filter((p) => p && p !== 'skip'));
   const memoryCacheByChatId = new Map(); // chatId -> { summary, ts }
   const chatMemoryEnabledCacheByChatId = new Map(); // chatId -> { enabled, ts }
@@ -1543,8 +1546,8 @@ async function registerTodoBot({
   function buildPreferenceSuggestionKeyboard({ suggestionId }) {
     const rows = [
       [
-        { text: 'Сохранить', callback_data: `mem:accept:${suggestionId}`.slice(0, 64) },
-        { text: 'Не сохранять', callback_data: `mem:reject:${suggestionId}`.slice(0, 64) },
+        { text: 'Да', callback_data: `mem:accept:${suggestionId}`.slice(0, 64) },
+        { text: 'Нет', callback_data: `mem:reject:${suggestionId}`.slice(0, 64) },
       ],
     ];
     return { reply_markup: { inline_keyboard: rows } };
@@ -1564,7 +1567,7 @@ async function registerTodoBot({
     try {
       candidates = await extractPreferences({
         apiKey,
-        model: process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || 'gpt-4.1-mini',
+        model: process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini',
         userText,
         preferencesSummary: memSum || '',
         chatSummary: chatCtx?.chatSummary || '',
@@ -1603,11 +1606,7 @@ async function registerTodoBot({
     });
     if (!row?.id) return;
 
-    const text = [
-      'Похоже, это похоже на предпочтение.',
-      `Сохранить?`,
-      `- ${candidate.key}: ${oneLinePreview(candidate.value_human, 140)}`,
-    ].join('\n');
+    const text = ['Зафиксируем надежно это предпочтение?', `- ${candidate.key}: ${oneLinePreview(candidate.value_human, 140)}`].join('\n');
 
     bot.sendMessage(chatId, text, buildPreferenceSuggestionKeyboard({ suggestionId: row.id }));
   }
@@ -1859,7 +1858,7 @@ async function registerTodoBot({
     const opts = {
       reply_markup: {
         keyboard: [
-          [{ text: '/today' }, { text: isAdmin ? '/commands' : '/list' }, { text: '/addtask' }, { text: 'Start' }],
+          [{ text: '/today' }, { text: isAdmin ? '/cmnds' : '/list' }, { text: '/addtask' }, { text: 'Start' }],
           [{ text: '/reminders_on' }, { text: '/reminders_off' }],
           ...testButtons,
         ],
@@ -1973,7 +1972,7 @@ async function registerTodoBot({
   });
 
   // Security admin commands (notify + sessions + revoke)
-  bot.onText(/^\/commands\s*$/i, async (msg) => {
+  bot.onText(/^\/(?:commands|cmnds)\s*$/i, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
     if (!chatSecurity.isAdminChat(chatId)) {
@@ -1984,7 +1983,9 @@ async function registerTodoBot({
     const lines = [
       'Админские команды:',
       '',
-      '- /commands - показать этот список',
+      '- /cmnds (алиас: /commands) - показать этот список',
+      '- /model - показать активные модели (AI, prefs extractor, STT)',
+      '- /prefs_pg - показать preferences строго из Postgres (по текущему чату)',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
       '- /chat_history [N] - показать последние N сообщений из chat memory (по умолчанию 30)',
       '- /chat_find <text> - поиск по chat memory (последние ~200 сообщений)',
@@ -2003,6 +2004,63 @@ async function registerTodoBot({
       '- /unrevoke <chatId>',
     ];
 
+    await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/model\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    const ai = process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1';
+    const pref = process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini';
+    const stt = process.env.TG_STT_MODEL || 'whisper-1';
+    bot.sendMessage(
+      chatId,
+      [
+        'Активные модели:',
+        `- AI: ${ai}`,
+        `- Preferences extractor: ${pref}`,
+        `- STT: ${stt}`,
+        '',
+        'Настройка по умолчанию:',
+        '- TG_AI_MODEL=gpt-5.1 (или AI_MODEL как алиас)',
+      ].join('\n')
+    );
+  });
+
+  bot.onText(/^\/prefs_pg\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!preferencesRepo) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL.');
+      return;
+    }
+    let rows = [];
+    try {
+      rows = await preferencesRepo.listPreferencesForChat({ chatId, activeOnly: true });
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось прочитать preferences из Postgres. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+    if (!rows.length) {
+      bot.sendMessage(chatId, '(preferences пусто)');
+      return;
+    }
+    const lines = ['Preferences (Postgres):', ''];
+    for (const r of rows.slice(0, 30)) {
+      const key = String(r.pref_key || '').trim();
+      const val = String(r.value_human || '').trim();
+      const src = String(r.source || '').trim() || '-';
+      const upd = r.updated_at ? String(r.updated_at).slice(0, 19).replace('T', ' ') : '';
+      lines.push(`- ${key}: ${val || '(empty)'} (source=${src}${upd ? `, updated=${upd}` : ''})`);
+    }
     await sendLongMessage({ bot, chatId, text: lines.join('\n') });
   });
 
@@ -2504,17 +2562,23 @@ async function registerTodoBot({
       debugLog('notion_call', { op: 'listTasks' });
       const tasks = await repo.listTasks();
       debugLog('notion_result', { op: 'listTasks', count: tasks.length });
-      const today = moment().startOf('day');
+      const todayYmd = yyyyMmDdInTz({ tz });
 
-      const todayTasks = tasks.filter((t) => t.tags.includes('Inbox') && t.status !== 'Done' && !t.tags.includes('Deprecated'));
+      // For /today: include Inbox only if it has no due date or is due today or earlier (overdue).
+      const todayTasks = tasks.filter(
+        (t) =>
+          t.tags.includes('Inbox') &&
+          t.status !== 'Done' &&
+          !t.tags.includes('Deprecated') &&
+          (!t.dueDate || String(t.dueDate).slice(0, 10) <= todayYmd)
+      );
       const dueToday = tasks.filter(
         (t) =>
           !t.tags.includes('Inbox') &&
           t.status !== 'Done' &&
           !t.tags.includes('Deprecated') &&
           t.dueDate &&
-          moment(t.dueDate, moment.ISO_8601, true).isValid() &&
-          moment(t.dueDate).isSame(today, 'day')
+          String(t.dueDate).slice(0, 10) === todayYmd
       );
       const highPrio = tasks.filter((t) => !t.tags.includes('Inbox') && t.status !== 'Done' && !t.tags.includes('Deprecated') && t.priority === 'High');
 
@@ -2601,6 +2665,13 @@ async function registerTodoBot({
           })
         )
         .catch(() => {});
+    }
+
+    // If user explicitly asks to "remember/save", do not let the LLM claim "Запомнил" without persistence.
+    // For explicit remember-intents, show the confirmation UI and stop further processing of this message.
+    if (msg.text && isPreferenceExtractorEnabled() && isLikelyPreferenceText(String(msg.text || ''))) {
+      await maybeSuggestPreferenceFromText({ chatId, userText: String(msg.text || ''), sourceMessageId: msg.message_id || null });
+      return;
     }
 
     // Ignore commands here (handled by onText handlers).
@@ -3019,12 +3090,49 @@ async function registerTodoBot({
   });
   bot.on('callback_query', handleCallbackQuery);
 
+  let lastPolling409At = 0;
+  let lastPolling409WarnAt = 0;
+
   bot.on('polling_error', (error) => {
     // Do not crash on transient errors.
     // eslint-disable-next-line no-console
     console.error('Polling error:', sanitizeErrorForLog(error));
-    debugLog('polling_error', { code: error?.code || null, message: sanitizeForLog(String(error?.message || '')) });
-    if (error.code === 'EFATAL') {
+    const code = error?.code || null;
+    const message = String(error?.message || '');
+    const messageSafe = sanitizeForLog(message);
+    debugLog('polling_error', { code, message: messageSafe });
+
+    // Telegram getUpdates conflict: another process is polling the same bot token.
+    // This is a very common local restart issue, so we warn admins and stop polling to avoid spam.
+    const isGetUpdatesConflict =
+      code === 'ETELEGRAM' &&
+      messageSafe.includes('409') &&
+      (messageSafe.toLowerCase().includes('getupdates') || messageSafe.toLowerCase().includes('other getupdates request'));
+    if (isGetUpdatesConflict) {
+      lastPolling409At = Date.now();
+      const now = Date.now();
+      if (now - lastPolling409WarnAt > 5 * 60_000) {
+        lastPolling409WarnAt = now;
+        notifyAdminsBestEffort({
+          bot,
+          text: [
+            'Todo bot: конфликт polling (Telegram 409).',
+            'Похоже, другой процесс уже запустил getUpdates для этого token.',
+            'Я остановил polling в этом процессе, чтобы не спамить ошибками.',
+            '',
+            'Что делать:',
+            '- останови другой инстанс бота (часто это зависший процесс после перезапуска или docker контейнер)',
+            '- запусти бота заново только в одном месте',
+          ].join('\n'),
+        }).catch(() => {});
+      }
+      bot.stopPolling().catch(() => {});
+      return;
+    }
+
+    if (code === 'EFATAL') {
+      // Do not restart immediately after 409 conflict, it will only keep spamming errors.
+      if (lastPolling409At && Date.now() - lastPolling409At < 2 * 60_000) return;
       setTimeout(() => {
         bot.stopPolling().then(() => bot.startPolling());
       }, 10_000);

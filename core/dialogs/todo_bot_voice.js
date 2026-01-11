@@ -6,6 +6,8 @@ const { planAgentAction } = require('../ai/agent_planner');
 const { downloadTelegramFileToTmp } = require('../connectors/telegram/files');
 const { convertOggToWav16kMono } = require('../connectors/stt/ffmpeg');
 const { transcribeWavWithOpenAI } = require('../connectors/stt/openai_whisper');
+const { sanitizeErrorForLog } = require('../runtime/log_sanitize');
+const { isLikelyPreferenceText } = require('../ai/preference_extractor');
 
 const {
   debugLog,
@@ -97,18 +99,22 @@ async function handleVoiceMessage({
 
   let oggPath = null;
   let wavPath = null;
+  let stage = 'download';
 
   try {
+    stage = 'download';
     const dl = await downloadTelegramFileToTmp({ bot, fileId: msg.voice.file_id, prefix: 'tg_voice', ext: 'ogg' });
     oggPath = dl.outPath;
     debugLog('voice_downloaded', { chatId, bytes: fs.statSync(oggPath).size });
 
     if (statusMessageId)
       await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'converting' }) });
+    stage = 'convert';
     const conv = await convertOggToWav16kMono({ inputPath: oggPath });
     wavPath = conv.wavPath;
 
     if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'stt' }) });
+    stage = 'stt';
     const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang });
     const transcript = stt.text;
 
@@ -120,6 +126,14 @@ async function handleVoiceMessage({
     }
 
     transcriptPreview = oneLinePreview(transcript, 90);
+
+    // If the user explicitly asks to remember/save something, do not let the planner respond "Запомнил" without persistence.
+    // Instead, show the confirm UI via preference extractor.
+    if (typeof maybeSuggestPreferenceFromText === 'function' && isLikelyPreferenceText(transcript)) {
+      await maybeSuggestPreferenceFromText({ chatId, userText: String(transcript || ''), sourceMessageId: msg?.message_id || null });
+      await finalizeStatus();
+      return;
+    }
 
     // Admin-only: handle chat memory queries deterministically (range/time) before planner.
     if (typeof handleAdminChatMemoryQuery === 'function') {
@@ -284,9 +298,44 @@ async function handleVoiceMessage({
     const kb = buildAiConfirmKeyboard({ draftId });
     bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
   } catch (e) {
-    debugLog('voice_error', { chatId, message: String(e?.message || e) });
+    const safe = sanitizeErrorForLog(e);
+    debugLog('voice_error', {
+      chatId,
+      stage,
+      code: safe?.code || null,
+      message: safe?.message || String(e?.message || e),
+      status: e?.response?.status || null,
+    });
     if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'error' }) });
-    bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
+    const adminIds = String(process.env.TG_ADMIN_CHAT_IDS || '')
+      .split(',')
+      .map((x) => Number(String(x).trim()))
+      .filter((n) => Number.isFinite(n));
+    const isAdmin = adminIds.includes(Number(chatId));
+    if (isAdmin) {
+      const msgLower = String(e?.message || '').toLowerCase();
+      const hint =
+        stage === 'download'
+          ? 'Похоже, не удается скачать voice файл из Telegram (timeout/сеть). Проверь VPN/файрвол и доступ к api.telegram.org/file.'
+          : String(e?.message || '').includes('OpenAI STT failed') || e?.response?.status === 403
+            ? 'Похоже, OpenAI STT вернул 403. Проверь права ключа/проект и доступ к audio/transcriptions или попробуй TG_STT_MODEL=gpt-4o-mini-transcribe.'
+            : msgLower.includes('429')
+              ? 'Похоже, лимит OpenAI (429). Подожди и попробуй снова.'
+              : null;
+      bot.sendMessage(
+        chatId,
+        [
+          'Voice ошибка.',
+          `- stage: ${stage}`,
+          `- error: ${safe?.code || '-'} ${safe?.message || String(e?.message || e)}`,
+          hint ? `- hint: ${hint}` : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      );
+    } else {
+      bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
+    }
   } finally {
     // Best-effort: always show the transcript preview, even if we returned early due to confirmation flows.
     try {

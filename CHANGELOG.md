@@ -4,10 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Admin UI:
+  - В админской клавиатуре кнопка сокращена до `/cmnds` (алиас: `/commands`), чтобы помещалось на телефоне.
+
+- Reminders:
+  - Утренний дайджест включает "Посты сегодня" из Social Media Planner (исключая `Published` и `Cancelled`).
+  - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
+  - Bumped reminders worker version to `v0.1.7`.
+
+- Telegram polling:
+  - При `409 Conflict` (другая инстанция бота делает getUpdates) отправляем предупреждение в админ-чат и останавливаем polling в текущем процессе.
+
+- Voice:
+  - Улучшена диагностика ошибок voice (stage, HTTP status) и добавлен fallback моделей STT при проблемах доступа к `whisper-1`.
+
 - Chat memory UX (admin):
   - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
   - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
-  - Bumped todo bot version to `v0.1.42`.
+  - Bumped todo bot version to `v0.2.1`.
+
+- Preferences UX and diagnostics:
+  - Подтверждение сохранения preference: короткий вопрос и кнопки Да/Нет.
+  - Добавлены админ-команды `/prefs_pg` и `/model` для детерминированной диагностики (Postgres и модели).
+  - Явное управление моделью через `TG_AI_MODEL` (и алиас `AI_MODEL`).
 
 - Tasks fuzzy resolve:
   - Улучшен fuzzy-match для voice случаев, когда слова “склеены” (например `testworktask`), чтобы не показывать нерелевантный длинный список кандидатов.

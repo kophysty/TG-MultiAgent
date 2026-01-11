@@ -9,6 +9,75 @@ function safeJsonParse(text) {
   }
 }
 
+function isPlainObject(x) {
+  return Boolean(x && typeof x === 'object' && !Array.isArray(x));
+}
+
+function normalizeToolArgsCommon(args) {
+  if (!isPlainObject(args)) return args;
+  const out = { ...args };
+
+  // Common key aliases across models and providers.
+  if (out.pageId === undefined && out.page_id !== undefined) out.pageId = out.page_id;
+  if (out.taskIndex === undefined && out.index !== undefined) out.taskIndex = out.index;
+  if (out.taskIndex === undefined && out.task_index !== undefined) out.taskIndex = out.task_index;
+  if (out.queryText === undefined && out.query !== undefined) out.queryText = out.query;
+  if (out.queryText === undefined && out.query_text !== undefined) out.queryText = out.query_text;
+
+  return out;
+}
+
+function normalizeToolArgsByToolName(toolName, args) {
+  const out = normalizeToolArgsCommon(args);
+  if (!isPlainObject(out)) return out;
+
+  function addDaysToYyyyMmDd(ymd, days) {
+    const s = String(ymd || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const dt = new Date(`${s}T00:00:00.000Z`);
+    if (!Number.isFinite(dt.getTime())) return null;
+    dt.setUTCDate(dt.getUTCDate() + Number(days || 0));
+    return dt.toISOString().slice(0, 10);
+  }
+
+  // Task list schema is special: executor expects dueDate and dueDate range keys.
+  if (toolName === 'notion.list_tasks') {
+    if (out.dueDate === undefined && out.date !== undefined) out.dueDate = out.date;
+    if (out.dueDateOnOrAfter === undefined && out.dateOnOrAfter !== undefined) out.dueDateOnOrAfter = out.dateOnOrAfter;
+    if (out.dueDateBefore === undefined && out.dateBefore !== undefined) out.dueDateBefore = out.dateBefore;
+
+    // Some models prefer range even for a single day. Convert to dueDate when range is exactly one day.
+    if (out.dueDate === undefined && out.dueDateOnOrAfter !== undefined && out.dueDateBefore !== undefined) {
+      const from = String(out.dueDateOnOrAfter).slice(0, 10);
+      const before = String(out.dueDateBefore).slice(0, 10);
+      const expectedBefore = addDaysToYyyyMmDd(from, 1);
+      if (expectedBefore && before === expectedBefore) out.dueDate = from;
+    }
+  }
+
+  // Social list schema is the inverse: it expects dateOnOrAfter/dateBefore.
+  if (toolName === 'notion.list_social_posts') {
+    if (out.dateOnOrAfter === undefined && out.dueDateOnOrAfter !== undefined) out.dateOnOrAfter = out.dueDateOnOrAfter;
+    if (out.dateBefore === undefined && out.dueDateBefore !== undefined) out.dateBefore = out.dueDateBefore;
+  }
+
+  // Common task create/update aliases.
+  if (toolName === 'notion.create_task' || toolName === 'notion.update_task') {
+    if (out.tag === undefined && out.category !== undefined) out.tag = out.category;
+    if (out.tag === undefined && Array.isArray(out.tags) && out.tags.length) out.tag = out.tags[0];
+    if (out.dueDate === undefined && out.due !== undefined) out.dueDate = out.due;
+    if (out.dueDate === undefined && out.deadline !== undefined) out.dueDate = out.deadline;
+    if (out.title === undefined && out.name !== undefined) out.title = out.name;
+  }
+
+  // Append description: sometimes models use description instead of text.
+  if (toolName === 'notion.append_description') {
+    if (out.text === undefined && out.description !== undefined) out.text = out.description;
+  }
+
+  return out;
+}
+
 function buildSystemPrompt({ allowedCategories }) {
   const cats = Array.isArray(allowedCategories) ? allowedCategories.filter(Boolean) : [];
   const catsList = cats.length ? cats.map((c) => `- ${c}`).join('\n') : '- Inbox';
@@ -32,6 +101,8 @@ function buildSystemPrompt({ allowedCategories }) {
     '- For "delete": do NOT delete, use tool "notion.move_to_deprecated".',
     '- For Ideas and Social, "delete" means archiving (use notion.archive_idea / notion.archive_social_post).',
     '- For "remove": prefer tool "notion.mark_done" unless user explicitly says deprecated.',
+    '- If the user explicitly asks to UPDATE a task and mentions status (e.g. "обнови задачу 5 статус Done"), use tool "notion.update_task" with args.status.',
+    '- Use tool "notion.mark_done" when the user asks to mark a task as completed/done (e.g. "пометь выполненной", "сделай done", "заверши").',
     '- If user asks to show/list tasks (e.g., "покажи", "список", "что у меня в Notion") you MUST use tool "notion.list_tasks".',
     '- If user asks to show/list tasks AND mentions a keyword/topic (e.g. "покажи задачи про билеты", "покажи задачи купить", "список задач по слову созвон"), you STILL MUST use "notion.list_tasks" and pass args.queryText to filter by title. Do NOT use "notion.find_tasks" for show/list queries.',
     '- When listing tasks, default behavior is to EXCLUDE completed (Done) tasks.',
@@ -59,6 +130,7 @@ function buildSystemPrompt({ allowedCategories }) {
     '- For categories, prefer args.tag with a value from Allowed categories.',
     '- Common RU synonyms: "домашние" -> tag "Home", "рабочие" -> tag "Work", "инбокс/входящие/today" -> tag "Inbox".',
     '- If user asks "задачи на сегодня" use args.preset="today" (this means dueDate = today PLUS Inbox).',
+    '- For list_tasks date ranges (like "на этой неделе/на следующей неделе"), use args.dueDateOnOrAfter and args.dueDateBefore (not dateOnOrAfter/dateBefore).',
     '- Relative dates like "сегодня/завтра/послезавтра" MUST be interpreted using the provided timezone and current time in the user message context.',
     '- If the user specifies a time (e.g. "сегодня в 15:00"), set dueDate to a full ISO datetime string (YYYY-MM-DDTHH:mm:ss+HH:MM) in that timezone. Do NOT invent a different day.',
     '- If user asks for completed tasks: set args.status="Done" or args.doneOnly=true.',
@@ -105,7 +177,8 @@ function normalizePlan(obj) {
   const args = obj?.tool?.args;
   if (!name || typeof name !== 'string') throw new Error('Tool plan missing tool.name');
   if (!args || typeof args !== 'object') throw new Error('Tool plan missing tool.args');
-  return { type: 'tool', chat: null, tool: { name, args } };
+  const normalizedArgs = normalizeToolArgsByToolName(name, args);
+  return { type: 'tool', chat: null, tool: { name, args: normalizedArgs } };
 }
 
 async function planAgentAction({
