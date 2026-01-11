@@ -16,6 +16,14 @@ function isLikelyPreferenceText(userText) {
   // Explicit "remember" style requests.
   if (/(запомни|запоминай|сохрани|сохран(и|ять)|remember)/.test(t)) return true;
 
+  // Explicit "write down / add to preferences" style requests.
+  // Guard: avoid triggering on tasks like "добавь задачу".
+  const mentionsPreferences =
+    /(preferences?|преф(ы|ы)?|предпочтен(ие|ия|иям|иях|ий)|в\s+память|постоянн(ую|ая)\s+память)/.test(t);
+  const writeDownVerb = /(запиши|занеси|внеси|зафиксируй|добав(ь|ьте|ить)|сохрани)/.test(t);
+  const looksLikeTask = /(задач(у|и|а|ей)|таск(и|а|ов)?|todo|to-do)/.test(t);
+  if (writeDownVerb && mentionsPreferences && !looksLikeTask) return true;
+
   // Heuristic signals that the user is describing a stable preference.
   if (/(я\s+предпочитаю|мне\s+нравит(ся|ься)|мне\s+не\s+нравит(ся|ься)|я\s+не\s+люблю)/.test(t)) return true;
   if (/(пожалуйста|плиз|pls|пиши|говори|отвечай)/.test(t) && /(всегда|никогда|обычно|по\s+умолчанию)/.test(t)) return true;

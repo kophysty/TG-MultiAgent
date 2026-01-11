@@ -21,12 +21,13 @@ All notable changes to this project will be documented in this file.
 - Chat memory UX (admin):
   - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
   - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
-  - Bumped todo bot version to `v0.2.1`.
+  - Bumped todo bot version to `v0.2.2`.
 
 - Preferences UX and diagnostics:
   - Подтверждение сохранения preference: короткий вопрос и кнопки Да/Нет.
   - Добавлены админ-команды `/prefs_pg` и `/model` для детерминированной диагностики (Postgres и модели).
   - Явное управление моделью через `TG_AI_MODEL` (и алиас `AI_MODEL`).
+  - Расширен детектор "это preference" на команды вида "запиши/зафиксируй/добавь в preferences", чтобы не было ложных ответов "сохранил" без кнопок.
 
 - Tasks fuzzy resolve:
   - Улучшен fuzzy-match для voice случаев, когда слова “склеены” (например `testworktask`), чтобы не показывать нерелевантный длинный список кандидатов.
