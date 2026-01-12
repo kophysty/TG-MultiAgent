@@ -10,7 +10,8 @@ All notable changes to this project will be documented in this file.
 - Reminders:
   - Утренний дайджест включает "Посты сегодня" из Social Media Planner (исключая `Published` и `Cancelled`).
   - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
-  - Bumped reminders worker version to `v0.1.7`.
+  - Добавлены подробные `TG_DEBUG=1` логи (tick snapshot, memory sync stats, /worker_run, отправки напоминаний).
+  - Bumped reminders worker version to `v0.1.9`.
 
 - Telegram polling:
   - При `409 Conflict` (другая инстанция бота делает getUpdates) отправляем предупреждение в админ-чат и останавливаем polling в текущем процессе.
@@ -21,13 +22,18 @@ All notable changes to this project will be documented in this file.
 - Chat memory UX (admin):
   - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
   - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
-  - Bumped todo bot version to `v0.2.2`.
+  - Bumped todo bot version to `v0.2.6`.
 
 - Preferences UX and diagnostics:
   - Подтверждение сохранения preference: короткий вопрос и кнопки Да/Нет.
+  - Явные команды "запомни/добавь в память" теперь сохраняют "сырой факт" как заметку (category `memory_note`) даже если extractor не выделил структурированные preferences.
   - Добавлены админ-команды `/prefs_pg` и `/model` для детерминированной диагностики (Postgres и модели).
+  - Добавлена админ-команда `/worker_run` для принудительного запуска синка memory (Notion <-> Postgres) в reminders worker без ожидания `TG_MEMORY_SYNC_SECONDS`.
   - Явное управление моделью через `TG_AI_MODEL` (и алиас `AI_MODEL`).
   - Расширен детектор "это preference" на команды вида "запиши/зафиксируй/добавь в preferences", чтобы не было ложных ответов "сохранил" без кнопок.
+  - При OpenAI 429 (rate limit) бот теперь отвечает пользователю, а не молчит.
+  - При TG_AI=0 бот теперь не молчит в админ-чате на обычные текстовые сообщения: пишет подсказку как включить AI и как проверить /model.
+  - `/model` теперь также показывает TG_AI и наличие OPENAI_API_KEY (set or missing).
 
 - Tasks fuzzy resolve:
   - Улучшен fuzzy-match для voice случаев, когда слова “склеены” (например `testworktask`), чтобы не показывать нерелевантный длинный список кандидатов.

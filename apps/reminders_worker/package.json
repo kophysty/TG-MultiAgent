@@ -1,6 +1,6 @@
 {
   "name": "tg-multiagent-reminders-worker",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "private": true,
   "type": "commonjs",
   "description": "Reminders worker for TG-MultiAgent. Polls Notion Tasks DB and sends Telegram reminders with Postgres dedup.",

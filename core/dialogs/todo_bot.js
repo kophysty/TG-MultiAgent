@@ -16,7 +16,12 @@ const { createToolExecutor } = require('./todo_bot_executor');
 const { createCallbackQueryHandler } = require('./todo_bot_callbacks');
 const { handleVoiceMessage } = require('./todo_bot_voice');
 const { sanitizeErrorForLog, sanitizeForLog, sanitizeTextForStorage } = require('../runtime/log_sanitize');
-const { extractPreferences, isLikelyPreferenceText } = require('../ai/preference_extractor');
+const {
+  extractPreferences,
+  isLikelyPreferenceText,
+  extractExplicitMemoryNoteText,
+  isExplicitMemoryCommandWithoutPayload,
+} = require('../ai/preference_extractor');
 const { createChatSecurity, formatChatLine } = require('../runtime/chat_security');
 const { makeTraceId } = require('../runtime/trace');
 const { enterWithTrace, getTraceId } = require('../runtime/trace_context');
@@ -145,6 +150,10 @@ async function safeEditStatus({ bot, chatId, messageId, text }) {
 
 function makeId(text) {
   return crypto.createHash('md5').update(text).digest('hex').slice(0, 8);
+}
+
+function md5Hex(text) {
+  return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
 }
 
 function truncate(text, maxLen) {
@@ -1064,6 +1073,7 @@ async function registerTodoBot({
   const aiDraftByChatId = new Map(); // chatId -> { id, task, updatedAt, awaitingConfirmation }
   const aiDraftById = new Map(); // id -> { chatId, task, updatedAt, awaitingConfirmation }
   const pendingToolActionByChatId = new Map(); // chatId -> { id, kind, payload, createdAt }
+  const lastAiDisabledHintAtByChatId = new Map(); // chatId -> ts
   const lastShownListByChatId = new Map(); // key(chatId,board) -> [{ index, id, title }] (tasks)
   const lastShownIdeasListByChatId = new Map(); // chatId -> [{ index, id, title }] (ideas)
   const lastShownSocialListByChatId = new Map(); // chatId -> [{ index, id, title }] (social posts)
@@ -1136,7 +1146,7 @@ async function registerTodoBot({
     if (!preferencesRepo) return { ok: true, stored: false, mode: norm };
 
     try {
-      await preferencesRepo.upsertPreference({
+      const { externalId } = await preferencesRepo.upsertPreference({
         chatId,
         scope: 'global',
         category: 'settings',
@@ -1146,6 +1156,31 @@ async function registerTodoBot({
         active: true,
         source: 'postgres',
       });
+
+      // Keep Notion UI in sync (write-through queue).
+      try {
+        const payload = {
+          externalId,
+          chatId,
+          scope: 'global',
+          category: null,
+          key: 'tasks_board_mode',
+          active: true,
+          valueHuman: norm,
+          valueJson: JSON.stringify({ mode: norm }),
+          syncHash: md5Hex(JSON.stringify({ externalId, chatId, scope: 'global', key: 'tasks_board_mode', value: norm })),
+          lastSource: 'postgres',
+          updatedAt: new Date().toISOString(),
+        };
+        await preferencesRepo.enqueueNotionSync({
+          kind: 'pref_page_upsert',
+          externalId,
+          payload,
+          payloadHash: md5Hex(JSON.stringify(payload)),
+        });
+      } catch {
+        // best-effort
+      }
       return { ok: true, stored: true, mode: norm };
     } catch {
       return { ok: true, stored: false, mode: norm };
@@ -1554,31 +1589,64 @@ async function registerTodoBot({
   }
 
   async function maybeSuggestPreferenceFromText({ chatId, userText, sourceMessageId }) {
-    if (!isPreferenceExtractorEnabled()) return;
-    if (!pgPool || !preferencesRepo || !memorySuggestionsRepo) return;
-    if (!isAiEnabled()) return;
-    if (!isLikelyPreferenceText(userText)) return;
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return;
+    if (!isPreferenceExtractorEnabled()) return false;
+    if (!isLikelyPreferenceText(userText)) return false;
+
+    // Explicit memory flow: save raw note text after "запомни/в память" (always via confirmation).
+    // This must work even when TG_AI is disabled and without OpenAI, because it's a pure UX + Postgres feature.
+    const explicitNoteText = extractExplicitMemoryNoteText(userText);
+    const explicitEmpty = !explicitNoteText && isExplicitMemoryCommandWithoutPayload(userText);
+    if (explicitEmpty) {
+      bot.sendMessage(chatId, 'Ок. Что именно сохранить в память? Напиши текст после слова "запомни".');
+      return true;
+    }
+
+    if (!pgPool || !preferencesRepo || !memorySuggestionsRepo) {
+      // If this was an explicit memory request, do not fail silently.
+      if (explicitNoteText) {
+        bot.sendMessage(chatId, 'Postgres не настроен. Нельзя сохранить память. Добавь POSTGRES_URL.');
+        return true;
+      }
+      return false;
+    }
 
     // Require chat memory context to be available only when configured; otherwise proceed with empty.
     const [memSum, chatCtx] = await Promise.all([getMemorySummaryForChat(chatId), getChatMemoryContextForChat(chatId)]);
     let candidates = [];
-    try {
-      candidates = await extractPreferences({
-        apiKey,
-        model: process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini',
-        userText,
-        preferencesSummary: memSum || '',
-        chatSummary: chatCtx?.chatSummary || '',
-        chatHistory: chatCtx?.chatHistory || '',
-      });
-    } catch (e) {
-      debugLog('pref_extractor_error', { chatId, message: String(e?.message || e) });
-      return;
+    if (explicitNoteText) {
+      const idPart = sourceMessageId ? String(sourceMessageId) : String(Date.now());
+      const key = `memory.note.${idPart}.${makeId(explicitNoteText)}`;
+      candidates = [
+        {
+          key,
+          scope: 'global',
+          category: 'memory_note',
+          valueHuman: explicitNoteText,
+          valueJson: { type: 'memory_note', text: explicitNoteText, source: 'explicit' },
+          confidence: 1.0,
+          reason: 'explicit memory note requested',
+        },
+      ];
+    } else {
+      if (!isAiEnabled()) return false;
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) return false;
+      try {
+        candidates = await extractPreferences({
+          apiKey,
+          model: process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini',
+          userText,
+          preferencesSummary: memSum || '',
+          chatSummary: chatCtx?.chatSummary || '',
+          chatHistory: chatCtx?.chatHistory || '',
+        });
+      } catch (e) {
+        debugLog('pref_extractor_error', { chatId, message: String(e?.message || e) });
+        return false;
+      }
     }
 
-    if (!candidates.length) return;
+    if (!candidates.length) return false;
 
     // One suggestion at a time to avoid spam.
     const c = candidates[0];
@@ -1596,7 +1664,11 @@ async function registerTodoBot({
       // Ensure table exists
       await pgPool.query('SELECT 1 FROM memory_suggestions LIMIT 1');
     } catch {
-      return;
+      if (explicitNoteText) {
+        bot.sendMessage(chatId, 'Не получилось сохранить память: таблица memory_suggestions не найдена. Проверь миграции Postgres.');
+        return true;
+      }
+      return false;
     }
 
     const row = await memorySuggestionsRepo.createPreferenceSuggestion({
@@ -1604,11 +1676,15 @@ async function registerTodoBot({
       candidate,
       sourceMessageId: sourceMessageId || null,
     });
-    if (!row?.id) return;
+    if (!row?.id) return false;
 
-    const text = ['Зафиксируем надежно это предпочтение?', `- ${candidate.key}: ${oneLinePreview(candidate.value_human, 140)}`].join('\n');
+    const isNote = candidate.category === 'memory_note' || String(candidate.key || '').startsWith('memory.note.');
+    const text = isNote
+      ? ['Сохранить в память (заметка)?', `- ${oneLinePreview(candidate.value_human, 180)}`].join('\n')
+      : ['Зафиксируем надежно это предпочтение?', `- ${candidate.key}: ${oneLinePreview(candidate.value_human, 140)}`].join('\n');
 
     bot.sendMessage(chatId, text, buildPreferenceSuggestionKeyboard({ suggestionId: row.id }));
+    return true;
   }
 
   async function renderAndRememberJournalList({ chatId, entries, title }) {
@@ -1986,6 +2062,7 @@ async function registerTodoBot({
       '- /cmnds (алиас: /commands) - показать этот список',
       '- /model - показать активные модели (AI, prefs extractor, STT)',
       '- /prefs_pg - показать preferences строго из Postgres (по текущему чату)',
+      '- /worker_run - попросить reminders worker сделать синхронизацию memory (Notion <-> Postgres) сейчас (без отправки напоминаний)',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
       '- /chat_history [N] - показать последние N сообщений из chat memory (по умолчанию 30)',
       '- /chat_find <text> - поиск по chat memory (последние ~200 сообщений)',
@@ -2017,6 +2094,8 @@ async function registerTodoBot({
     const ai = process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1';
     const pref = process.env.TG_PREF_EXTRACTOR_MODEL || process.env.TG_AI_MODEL || process.env.AI_MODEL || 'gpt-4.1-mini';
     const stt = process.env.TG_STT_MODEL || 'whisper-1';
+    const aiEnabled = isAiEnabled();
+    const hasApiKey = Boolean(String(process.env.OPENAI_API_KEY || '').trim());
     bot.sendMessage(
       chatId,
       [
@@ -2024,6 +2103,10 @@ async function registerTodoBot({
         `- AI: ${ai}`,
         `- Preferences extractor: ${pref}`,
         `- STT: ${stt}`,
+        '',
+        'AI режим:',
+        `- TG_AI: ${aiEnabled ? 'on' : 'off'}`,
+        `- OPENAI_API_KEY: ${hasApiKey ? 'set' : 'missing'}`,
         '',
         'Настройка по умолчанию:',
         '- TG_AI_MODEL=gpt-5.1 (или AI_MODEL как алиас)',
@@ -2057,11 +2140,89 @@ async function registerTodoBot({
     for (const r of rows.slice(0, 30)) {
       const key = String(r.pref_key || '').trim();
       const val = String(r.value_human || '').trim();
+      const cat = r.category === null || r.category === undefined ? null : String(r.category || '').trim() || null;
       const src = String(r.source || '').trim() || '-';
       const upd = r.updated_at ? String(r.updated_at).slice(0, 19).replace('T', ' ') : '';
-      lines.push(`- ${key}: ${val || '(empty)'} (source=${src}${upd ? `, updated=${upd}` : ''})`);
+      const label = cat === 'memory_note' ? 'memory' : key;
+      lines.push(`- ${label}: ${val || '(empty)'} (source=${src}${upd ? `, updated=${upd}` : ''})`);
     }
     await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/worker_run\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!preferencesRepo) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL.');
+      return;
+    }
+    try {
+      // Ensure queue exists
+      await pgPool.query('SELECT 1 FROM notion_sync_queue LIMIT 1');
+    } catch {
+      bot.sendMessage(chatId, 'Не найдена таблица notion_sync_queue. Проверь миграции Postgres.');
+      return;
+    }
+
+    // Best-effort: enqueue upsert for all current preferences in this chat, so Notion UI catches up quickly.
+    try {
+      const rows = await preferencesRepo.listPreferencesForChat({ chatId, activeOnly: true });
+      for (const r of (rows || []).slice(0, 60)) {
+        const key = String(r?.pref_key || '').trim();
+        if (!key) continue;
+        const scope = String(r?.scope || 'global').trim() || 'global';
+        const externalId = preferencesRepo.makeExternalId({ chatId, scope, key });
+        const categoryRaw = r?.category === null || r?.category === undefined ? null : String(r.category || '').trim() || null;
+        const category = categoryRaw === 'memory_note' || categoryRaw === 'settings' ? null : categoryRaw;
+        const valueHuman = r?.value_human === null || r?.value_human === undefined ? null : String(r.value_human || '').trim() || null;
+        const valueJsonStr = JSON.stringify(r?.value_json || {});
+        const payload = {
+          externalId,
+          chatId,
+          scope,
+          category,
+          key,
+          active: true,
+          valueHuman,
+          valueJson: valueJsonStr,
+          syncHash: md5Hex(JSON.stringify({ externalId, chatId, scope, key, active: true, valueHuman, valueJsonStr })),
+          lastSource: String(r?.source || 'postgres'),
+          updatedAt: new Date().toISOString(),
+        };
+        await preferencesRepo.enqueueNotionSync({
+          kind: 'pref_page_upsert',
+          externalId,
+          payload,
+          payloadHash: md5Hex(JSON.stringify(payload)),
+        });
+      }
+    } catch {
+      // best-effort
+    }
+
+    const payload = {
+      chatId,
+      requestedAt: new Date().toISOString(),
+      send: false,
+      reason: 'manual_admin_command',
+    };
+    try {
+      await preferencesRepo.enqueueNotionSync({
+        kind: 'worker_run',
+        externalId: `worker_run:chat:${chatId}`,
+        payload,
+        payloadHash: makeId(JSON.stringify(payload)),
+      });
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось поставить worker_run в очередь. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+
+    bot.sendMessage(chatId, 'Ок. Попросил reminders worker сделать синхронизацию memory сейчас. Обычно занимает до 1 минуты.');
   });
 
   bot.onText(/^\/errors(?:\s+(\d+))?\s*$/i, async (msg, match) => {
@@ -2670,8 +2831,12 @@ async function registerTodoBot({
     // If user explicitly asks to "remember/save", do not let the LLM claim "Запомнил" without persistence.
     // For explicit remember-intents, show the confirmation UI and stop further processing of this message.
     if (msg.text && isPreferenceExtractorEnabled() && isLikelyPreferenceText(String(msg.text || ''))) {
-      await maybeSuggestPreferenceFromText({ chatId, userText: String(msg.text || ''), sourceMessageId: msg.message_id || null });
-      return;
+      const handled = await maybeSuggestPreferenceFromText({
+        chatId,
+        userText: String(msg.text || ''),
+        sourceMessageId: msg.message_id || null,
+      });
+      if (handled) return;
     }
 
     // Ignore commands here (handled by onText handlers).
@@ -2716,7 +2881,7 @@ async function registerTodoBot({
           await chatMemoryRepo.appendMessage({ chatId, role: 'user', text: safeText, tgMessageId: tgMessageId || null });
         },
         maybeSuggestPreferenceFromText: async ({ chatId: cId, userText, sourceMessageId }) => {
-          await maybeSuggestPreferenceFromText({
+          return await maybeSuggestPreferenceFromText({
             chatId: cId,
             userText,
             sourceMessageId,
@@ -2776,7 +2941,25 @@ async function registerTodoBot({
     // AI: ignore non-text messages for now.
     if (!msg.text) return;
 
-    if (!isAiEnabled()) return;
+    if (!isAiEnabled()) {
+      // Do not stay silent when user expects the "agent" behavior.
+      // Keep it admin-only and rate-limited to avoid noise in other chats.
+      if (chatSecurity.isAdminChat(chatId)) {
+        const lastTs = lastAiDisabledHintAtByChatId.get(chatId) || 0;
+        if (Date.now() - lastTs > 60_000) {
+          lastAiDisabledHintAtByChatId.set(chatId, Date.now());
+          bot.sendMessage(
+            chatId,
+            [
+              'AI сейчас выключен (TG_AI=0), поэтому на обычные текстовые сообщения бот не отвечает.',
+              'Если хочешь тестировать агента, перезапусти с TG_AI=1 и проверь /model (TG_AI и OPENAI_API_KEY).',
+              'Команды все равно работают: /cmnds, /list, /today, /prefs_pg, /worker_run.',
+            ].join('\n')
+          );
+        }
+      }
+      return;
+    }
 
     const text = msg.text.trim();
     if (!text) return;
@@ -2963,6 +3146,11 @@ async function registerTodoBot({
       }
     } catch (e) {
       debugLog('planner_error', { message: String(e?.message || e) });
+      const status = e?.response?.status || null;
+      if (status === 429) {
+        bot.sendMessage(chatId, 'OpenAI временно ограничил запросы (429). Подожди 30-60 секунд и повтори.');
+        return;
+      }
       if (eventLogRepo) {
         eventLogRepo
           .appendEvent({

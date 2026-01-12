@@ -28,6 +28,7 @@
 - `/cmnds` (алиас: `/commands`) - показать список админских команд (включая диагностику)
 - `/model` - показать активные модели (AI, prefs extractor, STT) и подсказку по настройке
 - `/prefs_pg` - показать preferences строго из Postgres (по текущему чату)
+- `/worker_run` - попросить reminders worker сделать синхронизацию memory (Notion <-> Postgres) сейчас. По умолчанию без отправки напоминаний, только синк.
 - `/errors [hours]` - последние ошибки из Postgres `event_log` по текущему чату (по умолчанию 24 часа)
 - `/chat_history [N]` - показать последние N сообщений из chat memory (`chat_messages`) по текущему чату (по умолчанию 30)
 - `/chat_find <text>` - поиск по chat memory (`chat_messages`) по текущему чату

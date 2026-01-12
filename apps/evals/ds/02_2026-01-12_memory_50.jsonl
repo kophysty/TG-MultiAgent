@@ -1,0 +1,58 @@
+{"id":"m01","input":"запомни что мы пишем в Facebook","expect":{"route":"memory_note","noteText":"что мы пишем в Facebook"}}
+{"id":"m02","input":"Запомни: мы пишем в Telegram","expect":{"route":"memory_note","noteText":"мы пишем в Telegram"}}
+{"id":"m03","input":"пожалуйста запомни - мы пишем в LinkedIn","expect":{"route":"memory_note","noteText":"мы пишем в LinkedIn"}}
+{"id":"m04","input":"запомни, что мы пишем в X","expect":{"route":"memory_note","noteText":"что мы пишем в X"}}
+{"id":"m05","input":"запомничтомыпишемвfacebook","expect":{"route":"memory_note","noteText":"чтомыпишемвfacebook"}}
+{"id":"m06","input":"запомни:Facebook","expect":{"route":"memory_note","noteText":"Facebook"}}
+{"id":"m07","input":"запомни-Facebook","expect":{"route":"memory_note","noteText":"Facebook"}}
+{"id":"m08","input":"  запомни:   мы пишем в Facebook   ","expect":{"route":"memory_note","noteText":"мы пишем в Facebook"}}
+{"id":"m09","input":"запомни в память что мы пишем в Facebook","expect":{"route":"memory_note","noteText":"что мы пишем в Facebook"}}
+{"id":"m10","input":"запомни в постоянную память: мы пишем в Telegram","expect":{"route":"memory_note","noteText":"мы пишем в Telegram"}}
+
+{"id":"m11","input":"добавь в память: мы пишем в Facebook и Telegram","expect":{"route":"memory_note","noteText":"мы пишем в Facebook и Telegram"}}
+{"id":"m12","input":"добавь в память - мы пишем в Facebook","expect":{"route":"memory_note","noteText":"мы пишем в Facebook"}}
+{"id":"m13","input":"пожалуйста добавь в память мы пишем в Telegram","expect":{"route":"memory_note","noteText":"мы пишем в Telegram"}}
+{"id":"m14","input":"добавь в память задачу купить хлеб","expect":{"route":"memory_note","noteText":"задачу купить хлеб"}}
+{"id":"m15","input":"внеси в память: мы постим по понедельникам","expect":{"route":"memory_note","noteText":"мы постим по понедельникам"}}
+{"id":"m16","input":"занеси в память мы постим по вторникам","expect":{"route":"memory_note","noteText":"мы постим по вторникам"}}
+{"id":"m17","input":"зафиксируй в память то что мы постим по средам","expect":{"route":"memory_note","noteText":"то что мы постим по средам"}}
+{"id":"m18","input":"сохрани в память: мы постим по четвергам","expect":{"route":"memory_note","noteText":"мы постим по четвергам"}}
+{"id":"m19","input":"добавьте в память: мы не постим по пятницам","expect":{"route":"memory_note","noteText":"мы не постим по пятницам"}}
+{"id":"m20","input":"добавить в память: мы постим по субботам","expect":{"route":"memory_note","noteText":"мы постим по субботам"}}
+
+{"id":"m21","input":"запомнить что мы пишем в Facebook","expect":{"route":"memory_note","noteText":"что мы пишем в Facebook"}}
+{"id":"m22","input":"запомните что мы пишем в Telegram","expect":{"route":"memory_note","noteText":"что мы пишем в Telegram"}}
+{"id":"m23","input":"запомни","expect":{"route":"clarify"}}
+{"id":"m24","input":"запомни:","expect":{"route":"clarify"}}
+{"id":"m25","input":"пожалуйста запомни:","expect":{"route":"clarify"}}
+{"id":"m26","input":"добавь в память","expect":{"route":"clarify"}}
+{"id":"m27","input":"добавь в память:","expect":{"route":"clarify"}}
+{"id":"m28","input":"сохрани в память","expect":{"route":"clarify"}}
+{"id":"m29","input":"зафиксируй в память","expect":{"route":"clarify"}}
+{"id":"m30","input":"remember","expect":{"route":"clarify"}}
+
+{"id":"m31","input":"remember: we post to facebook","expect":{"route":"memory_note","noteText":"we post to facebook"}}
+{"id":"m32","input":"remember we post to telegram","expect":{"route":"memory_note","noteText":"we post to telegram"}}
+{"id":"m33","input":"remember in memory: we post to linkedin","expect":{"route":"memory_note","noteText":"we post to linkedin"}}
+{"id":"m34","input":"remember to memory - we post to x","expect":{"route":"memory_note","noteText":"we post to x"}}
+
+{"id":"m35","input":"добавь задачу купить хлеб","expect":{"route":"none"}}
+{"id":"m36","input":"добавь тег work","expect":{"route":"none"}}
+{"id":"m37","input":"удали задачу testworktask","expect":{"route":"none"}}
+{"id":"m38","input":"/today","expect":{"route":"none"}}
+
+{"id":"m39","input":"запиши предпочтение: без эмодзи","expect":{"route":"extractor"}}
+{"id":"m40","input":"зафиксируй предпочтения: отвечай коротко","expect":{"route":"extractor"}}
+{"id":"m41","input":"запиши в preferences: отвечай таблицей","expect":{"route":"extractor"}}
+{"id":"m42","input":"preferences: я люблю списки","expect":{"route":"extractor"}}
+
+{"id":"m43","input":"по умолчанию отвечай коротко","expect":{"route":"extractor"}}
+{"id":"m44","input":"обычно отвечай подробно","expect":{"route":"extractor"}}
+{"id":"m45","input":"всегда отвечай без эмодзи","expect":{"route":"extractor"}}
+{"id":"m46","input":"никогда не используй эмодзи","expect":{"route":"extractor"}}
+{"id":"m47","input":"таймзона мск","expect":{"route":"extractor"}}
+{"id":"m48","input":"timezone Europe/Moscow","expect":{"route":"extractor"}}
+
+{"id":"m49","input":"привет как дела","expect":{"route":"none"}}
+{"id":"m50","input":"ок","expect":{"route":"none"}}
+

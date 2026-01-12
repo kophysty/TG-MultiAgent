@@ -14,7 +14,10 @@ function isLikelyPreferenceText(userText) {
   if (!t.trim()) return false;
 
   // Explicit "remember" style requests.
-  if (/(запомни|запоминай|сохрани|сохран(и|ять)|remember)/.test(t)) return true;
+  if (/(запомни(ть|те)?|запоминай|сохрани|сохран(и|ять)|remember)/.test(t)) return true;
+
+  // Explicit "prefs:" / "preferences:" / "предпочтения:" shorthand.
+  if (/^\s*(preferences?|предпочтен(ие|ия))\s*[:=-]/.test(t)) return true;
 
   // Explicit "write down / add to preferences" style requests.
   // Guard: avoid triggering on tasks like "добавь задачу".
@@ -22,15 +25,57 @@ function isLikelyPreferenceText(userText) {
     /(preferences?|преф(ы|ы)?|предпочтен(ие|ия|иям|иях|ий)|в\s+память|постоянн(ую|ая)\s+память)/.test(t);
   const writeDownVerb = /(запиши|занеси|внеси|зафиксируй|добав(ь|ьте|ить)|сохрани)/.test(t);
   const looksLikeTask = /(задач(у|и|а|ей)|таск(и|а|ов)?|todo|to-do)/.test(t);
+  const mentionsMemory = /((?:в|во)\s+память|постоянн(ую|ая)\s+память)/.test(t);
+  if (writeDownVerb && mentionsMemory) return true;
   if (writeDownVerb && mentionsPreferences && !looksLikeTask) return true;
 
   // Heuristic signals that the user is describing a stable preference.
   if (/(я\s+предпочитаю|мне\s+нравит(ся|ься)|мне\s+не\s+нравит(ся|ься)|я\s+не\s+люблю)/.test(t)) return true;
   if (/(пожалуйста|плиз|pls|пиши|говори|отвечай)/.test(t) && /(всегда|никогда|обычно|по\s+умолчанию)/.test(t)) return true;
   if (/(формат|коротко|подробно|списком|таблицей|без\s+эмодзи)/.test(t)) return true;
+  if (/эмодзи/.test(t) && /(без|никогда|не\s+используй|не\s+надо|не\s+нужно)/.test(t)) return true;
   if (/(таймзон|timezone|мск|moscow|utc)/.test(t)) return true;
 
   return false;
+}
+
+function extractExplicitMemoryNoteText(userText) {
+  const s = String(userText || '').trim();
+  if (!s) return null;
+
+  // Capture everything after an explicit "remember/save to memory" request.
+  // Important: avoid treating "в память" itself as the payload.
+
+  // Variant A: verb + explicit memory marker + payload
+  const reWithMemory =
+    /^\s*(?:пожалуйста\s+)?(?:запомни(?:ть|те)?|запоминай|запиши|занеси|внеси|зафиксируй|сохрани|добав(?:ь|ьте|ить)|remember)\s*(?:мне\s*)?(?:(?:в|во)\s+постоянн(?:ую|ая)\s+память|(?:в|во)\s+память|in\s+memory|to\s+memory)\s*[:,-]?\s*(.+)\s*$/i;
+
+  // Variant B: "запомни" without explicit "в память", still treat as memory request.
+  const reZapomniOnly = /^\s*(?:пожалуйста\s+)?(?:запомни(?:ть|те)?|запоминай|remember)\s*[:,-]?\s*(.+)\s*$/i;
+
+  const m1 = s.match(reWithMemory);
+  if (m1) {
+    const rest = String(m1[1] || '');
+    const cleaned = rest.replace(/^[:,-]+/g, '').trim();
+    return cleaned || null;
+  }
+
+  const m2 = s.match(reZapomniOnly);
+  if (m2) {
+    const rest = String(m2[1] || '');
+    const cleaned = rest.replace(/^[:,-]+/g, '').trim();
+    return cleaned || null;
+  }
+
+  return null;
+}
+
+function isExplicitMemoryCommandWithoutPayload(userText) {
+  const s = String(userText || '').trim();
+  if (!s) return false;
+  const re =
+    /^\s*(?:пожалуйста\s+)?(?:запомни(?:ть|те)?|запоминай|запиши|занеси|внеси|зафиксируй|сохрани|добав(?:ь|ьте|ить)|remember)\s*(?:мне\s*)?(?:(?:в|во)\s+постоянн(?:ую|ая)\s+память|(?:в|во)\s+память|in\s+memory|to\s+memory)?\s*[:,-]?\s*$/i;
+  return re.test(s);
 }
 
 function buildSystemPrompt() {
@@ -111,7 +156,7 @@ async function extractPreferences({ apiKey, model = 'gpt-4.1-mini', userText, pr
   return normalizeResult(parsed);
 }
 
-module.exports = { extractPreferences, isLikelyPreferenceText };
+module.exports = { extractPreferences, isLikelyPreferenceText, extractExplicitMemoryNoteText, isExplicitMemoryCommandWithoutPayload };
 
 
 

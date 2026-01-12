@@ -49,5 +49,6 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-11_llm_args_normalize.md` - Нормализация args tool планов для совместимости между моделями + bump версии todo bot до 0.2.0
 - `2026-01-11_prefs_intents.md` - Preferences: распознавание синонимов "запиши/добавь в preferences" для надежного UX (Да/Нет)
 - `2026-01-12_prefs_models_pg.md` - Preferences UX (Да/Нет) + /prefs_pg + /model + контроль модели через TG_AI_MODEL/AI_MODEL
+- `2026-01-12_worker_run_force_memory_sync.md` - Admin: /worker_run для форсирования синка memory (Notion <-> Postgres) без ожидания 30 минут
 
 

@@ -7,7 +7,7 @@ const { downloadTelegramFileToTmp } = require('../connectors/telegram/files');
 const { convertOggToWav16kMono } = require('../connectors/stt/ffmpeg');
 const { transcribeWavWithOpenAI } = require('../connectors/stt/openai_whisper');
 const { sanitizeErrorForLog } = require('../runtime/log_sanitize');
-const { isLikelyPreferenceText } = require('../ai/preference_extractor');
+const { isLikelyPreferenceText, extractExplicitMemoryNoteText, isExplicitMemoryCommandWithoutPayload } = require('../ai/preference_extractor');
 
 const {
   debugLog,
@@ -127,12 +127,21 @@ async function handleVoiceMessage({
 
     transcriptPreview = oneLinePreview(transcript, 90);
 
-    // If the user explicitly asks to remember/save something, do not let the planner respond "Запомнил" without persistence.
-    // Instead, show the confirm UI via preference extractor.
-    if (typeof maybeSuggestPreferenceFromText === 'function' && isLikelyPreferenceText(transcript)) {
-      await maybeSuggestPreferenceFromText({ chatId, userText: String(transcript || ''), sourceMessageId: msg?.message_id || null });
-      await finalizeStatus();
-      return;
+    // If the user explicitly asks to remember/save something, do not let the planner respond without persistence.
+    // Only short-circuit for explicit memory commands; for other preference-like text keep normal planner flow.
+    if (typeof maybeSuggestPreferenceFromText === 'function') {
+      const isExplicitMemory = Boolean(extractExplicitMemoryNoteText(transcript) || isExplicitMemoryCommandWithoutPayload(transcript));
+      if (isExplicitMemory && isLikelyPreferenceText(transcript)) {
+        const handled = await maybeSuggestPreferenceFromText({
+          chatId,
+          userText: String(transcript || ''),
+          sourceMessageId: msg?.message_id || null,
+        });
+        if (handled) {
+          await finalizeStatus();
+          return;
+        }
+      }
     }
 
     // Admin-only: handle chat memory queries deterministically (range/time) before planner.

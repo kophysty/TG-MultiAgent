@@ -244,4 +244,16 @@
   - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
   - Bumped reminders worker version to `v0.1.7`.
 
+## 2026-01-12
+
+- Preferences and memory notes:
+  - Явные команды "запомни/в память" сохраняют "сырой факт" как заметку (category `memory_note`) через подтверждение Да/Нет, даже если extractor не смог выделить структурированное preference.
+  - Добавлена админ-команда `/worker_run` для принудительного запуска синка memory (Notion <-> Postgres) в reminders worker (без ожидания 30 минут).
+  - Исправлено: при OpenAI 429 (rate limit) бот отвечает пользователю, а не молчит.
+  - Исправлено: при TG_AI=0 бот не молчит в админ-чате на обычный текст и пишет подсказку как включить AI.
+  - Добавлены подробные `TG_DEBUG=1` логи в reminders worker (tick snapshot, memory sync stats, /worker_run, отправки напоминаний).
+  - `/model` теперь также показывает TG_AI и наличие OPENAI_API_KEY.
+  - Bumped todo bot version to `v0.2.6`.
+  - Bumped reminders worker version to `v0.1.9`.
+
 
