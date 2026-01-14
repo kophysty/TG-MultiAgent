@@ -13,6 +13,7 @@ const {
   inferJournalTopicsFromText,
   inferJournalContextFromText,
   inferMoodEnergyFromText,
+  extractNotionErrorInfo,
 } = require('./todo_bot_helpers');
 
 const crypto = require('crypto');
@@ -217,8 +218,20 @@ function createCallbackQueryHandler({
             return;
           }
           if (kind === 'notion.archive_idea') {
-            await ideasRepo.archiveIdea({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Архивировал идею.');
+            try {
+              await ideasRepo.archiveIdea({ pageId: payload.pageId });
+              bot.sendMessage(chatId, 'Готово. Архивировал идею.');
+              return;
+            } catch (e) {
+              const info = extractNotionErrorInfo(e);
+              const msg = String(info?.message || '').toLowerCase();
+              if (info?.status === 400 && info?.code === 'validation_error' && msg.includes('archived')) {
+                bot.sendMessage(chatId, 'Похоже, эта идея уже в архиве.');
+                return;
+              }
+              bot.sendMessage(chatId, 'Не получилось выполнить действие в Notion.');
+              return;
+            }
             return;
           }
           if (kind === 'notion.update_social_post') {
@@ -431,8 +444,7 @@ function createCallbackQueryHandler({
       const idx = Number(suffix);
       const pending = pendingToolActionByChatId.get(chatId);
       if (!pending || !Number.isFinite(idx)) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
+        bot.answerCallbackQuery(query.id, { text: 'Выбор устарел. Попробуй еще раз.', show_alert: false });
         return;
       }
 
@@ -501,8 +513,7 @@ function createCallbackQueryHandler({
       const idx = Number(idxRaw);
       const pending = pendingToolActionByChatId.get(chatId) || null;
       if (!pending || pending.id !== actionId || !String(pending.kind || '').startsWith('social.pick_platform')) {
-        bot.answerCallbackQuery(query.id);
-        bot.sendMessage(chatId, 'Выбор устарел. Попробуй еще раз.');
+        bot.answerCallbackQuery(query.id, { text: 'Выбор устарел. Попробуй еще раз.', show_alert: false });
         return;
       }
       const platforms = pending.payload?.platforms || [];

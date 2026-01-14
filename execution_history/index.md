@@ -50,5 +50,8 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-11_prefs_intents.md` - Preferences: распознавание синонимов "запиши/добавь в preferences" для надежного UX (Да/Нет)
 - `2026-01-12_prefs_models_pg.md` - Preferences UX (Да/Нет) + /prefs_pg + /model + контроль модели через TG_AI_MODEL/AI_MODEL
 - `2026-01-12_worker_run_force_memory_sync.md` - Admin: /worker_run для форсирования синка memory (Notion <-> Postgres) без ожидания 30 минут
+- `2026-01-12_prefs_delete_tools_and_sync.md` - Preferences: удаление/отключение (Notion delete/Active=false) и /prefs_rm, чтобы не было “воскрешения” из Postgres
+- `2026-01-13_notion_options_normalization.md` - Фикс валидации опций Notion (Status/Priority/Category) + расширение датасета тестов (v0.2.8)
+- `2026-01-14_p0_social_platform_and_archive_idea.md` - P0: Social platform (unsupported) уточнение + идемпотентный archive idea + меньше спама от устаревших inline кликов (v0.2.9)
 
 

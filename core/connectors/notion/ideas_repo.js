@@ -270,7 +270,8 @@ class NotionIdeasRepo {
       props.Priority = { select: priority ? { name: priority } : null };
     }
     if (status !== undefined && this._hasProp(schema, 'Status')) {
-      props.Status = { status: { name: status || 'Inbox' } };
+      const s = String(status || '').trim();
+      if (s) props.Status = { status: { name: s } };
     }
     if (source !== undefined && this._hasProp(schema, 'Source')) {
       const s = String(source || '').trim();

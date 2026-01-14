@@ -1,0 +1,83 @@
+{"id":"f01","userText":"добавь задачу купить молоко на завтра 10:00 с высоким приоритетом","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_task","args":{"title":{"$regex":"купить молоко","$flags":"i"},"dueDate":{"$regex":"2026-01-14T10:00"},"priority":"High"}}}
+{"id":"f02","userText":"добавь идею клавиатура с встроенным микрофоном для обвайп кодеров в раздел Dev с тегом Hardware","expected":{"type":"tool","toolName":"notion.create_idea","args":{"title":{"$regex":"клавиатура.*микрофоном","$flags":"i"},"area":"Dev","tags":["Hardware"]}}}
+{"id":"f03","userText":"покажи задачи на эту неделю по работе","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_tasks","args":{"tag":"Work"}}}
+{"id":"f04","userText":"удали задачи 1, 2 и 3","lastShownList":[{"index":1,"id":"t1","title":"Task 1"},{"index":2,"id":"t2","title":"Task 2"},{"index":3,"id":"t3","title":"Task 3"}],"expected":{"type":"tool","toolName":"notion.move_to_deprecated","args":{"taskIndex":1}}}
+{"id":"f05","userText":"отметь выполненной задачу про молоко","expected":{"type":"tool","toolName":"notion.mark_done","args":{"queryText":{"$regex":"молок","$flags":"i"}}}}
+{"id":"f06","userText":"создай пост в телеграм про запуск нового бота на завтра","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_social_post","args":{"platform":"TG  __ ForNoDevs","postDate":"2026-01-14"}}}
+{"id":"f07","userText":"запиши в дневник: сегодня продуктивно поработал над тестами, настроение отличное","expected":{"type":"tool","toolName":"notion.create_journal_entry","args":{"mood":5,"energy":5}}}
+{"id":"f08","userText":"найди идеи про клавиатуру","expected":{"type":"tool","toolName":"notion.find_ideas","args":{"queryText":{"$regex":"клавиатур","$flags":"i"}}}}
+{"id":"f09","userText":"обнови статус второго поста на Scheduled","lastShownSocialList":[{"index":1,"id":"s1","title":"Post 1"},{"index":2,"id":"s2","title":"Post 2"}],"expected":{"type":"tool","toolName":"notion.update_social_post","args":{"taskIndex":2,"status":"Scheduled"}}}
+{"id":"f10","userText":"запомни что я предпочитаю краткие ответы","expected":{"type":"chat","chat":{"message":{"$regex":"запомнил|preferences|краткие","$flags":"i"}}}}
+{"id":"f11","userText":"добавь рабочую задачу подготовить отчет на 15-е число","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_task","args":{"tag":"Work","dueDate":"2026-01-15"}}}
+{"id":"f12","userText":"покажи идеи в статусе Review","expected":{"type":"tool","toolName":"notion.list_ideas","args":{"status":"Review"}}}
+{"id":"f13","userText":"архивируй первую идею","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.archive_idea","args":{"taskIndex":1}}}
+{"id":"f14","userText":"перенеси задачу 5 в категорию Home","lastShownList":[{"index":5,"id":"t5","title":"Task 5"}],"expected":{"type":"tool","toolName":"notion.update_task","args":{"taskIndex":5,"tag":"Home"}}}
+{"id":"f15","userText":"покажи посты на завтра","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_social_posts","args":{"dateOnOrAfter":"2026-01-14"}}}
+{"id":"f16","userText":"измени приоритет идеи 1 на Medium","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea","args":{"taskIndex":1,"priority":"Medium"}}}
+{"id":"f17","userText":"поменяй статус задачи 'купить молоко' на Done","expected":{"type":"tool","toolName":"notion.update_task","args":{"queryText":{"$regex":"молок","$flags":"i"},"status":"Done"}}}
+{"id":"f18","userText":"добавь запись в дневник про стартап на 12-е число: обсудили план на спринт","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_journal_entry","args":{"date":"2026-01-12","topics":["Стартап"]}}}
+{"id":"f19","userText":"найди посты в твиттере про AI","expected":{"type":"tool","toolName":"notion.find_social_posts","args":{"queryText":{"$regex":"AI","$flags":"i"}}}}
+{"id":"f20","userText":"удали все записи из инбокса","expected":{"type":"tool","toolName":"notion.list_tasks","args":{"tag":"Inbox"}}}
+{"id":"f21","userText":"обнови вторую идею: добавь описание 'нужно проверить совместимость с macos'","lastShownIdeasList":[{"index":2,"id":"i2","title":"Idea 2"}],"expected":{"type":"tool","toolName":"notion.update_idea","args":{"taskIndex":2}}}
+{"id":"f22","userText":"покажи все выполненные посты в фейсбуке","expected":{"type":"tool","toolName":"notion.list_social_posts","args":{"platform":"FB","status":"Published"}}}
+{"id":"f23","userText":"перенеси завтрашний пост на 15-е","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.update_social_post","args":{"postDate":"2026-01-15"}}}
+{"id":"f24","userText":"добавь тег dev к задаче номер 3","lastShownList":[{"index":3,"id":"t3","title":"Task 3"}],"expected":{"type":"tool","toolName":"notion.update_task","args":{"taskIndex":3,"tag":"Work"}}}
+{"id":"f25","userText":"какой итог дня был вчера?","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_journal_entries","args":{"dateOnOrAfter":"2026-01-12","dateBefore":"2026-01-13"}}}
+{"id":"f26","userText":"добавь идею со статусом 'New'","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"f27","userText":"создай идею в несуществующей категории 'Secret'","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"f28","userText":"поставь задаче 1 приоритет 'Ultra'","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task","args":{"taskIndex":1}}}
+{"id":"f29","userText":"добавь пост на платформу 'Unknown'","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"f30","userText":"запиши в дневник тип 'Бред'","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+{"id":"adv01","userText":"создай задачу 'проверить интеграцию' и поставь статус New","expected":{"type":"tool","toolName":"notion.create_task"}}
+{"id":"adv02","userText":"добавь задачу 'сделать релиз' с приоритетом Ultra","expected":{"type":"tool","toolName":"notion.create_task"}}
+{"id":"adv03","userText":"создай задачу 'почистить backlog' в категории SuperWork","expected":{"type":"tool","toolName":"notion.create_task"}}
+{"id":"adv04","userText":"обнови задачу 1 и поставь статус New","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task"}}
+{"id":"adv05","userText":"поставь задаче 1 приоритет Ultra","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task"}}
+{"id":"adv06","userText":"задаче 1 поставь дедлайн 32.13.2026","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task"}}
+{"id":"adv07","userText":"отметь выполненной задачу \"!!!\"","expected":{"type":"tool","toolName":"notion.mark_done"}}
+{"id":"adv08","userText":"удали задачи: молоко; хлеб; \\' ; DROP TABLE tasks; --","expected":{"type":"tool","toolName":"notion.move_to_deprecated"}}
+{"id":"adv09","userText":"покажи задачи со статусом New","expected":{"type":"tool","toolName":"notion.list_tasks"}}
+{"id":"adv10","userText":"покажи задачи на дату 32.13.2026","expected":{"type":"tool","toolName":"notion.list_tasks"}}
+{"id":"adv11","userText":"покажи задачи на сегодня со статусом New","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_tasks"}}
+{"id":"adv12","userText":"покажи задачи про \"inbox\" но не из Inbox","expected":{"type":"tool","toolName":"notion.list_tasks"}}
+{"id":"adv13","userText":"поставь задаче 1 категорию TODAY","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task"}}
+{"id":"adv14","userText":"добавь задачу \"созвон\" на завтра в 25:90","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_task"}}
+{"id":"adv15","userText":"поставь задаче 1 приоритет 999","lastShownList":[{"index":1,"id":"t1","title":"Task 1"}],"expected":{"type":"tool","toolName":"notion.update_task"}}
+
+{"id":"adv16","userText":"добавь идею 'новый онбординг' со статусом New","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv17","userText":"создай идею 'улучшить ux' со статусом Inboxx","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv18","userText":"добавь идею 'переехать на новый движок' с приоритетом Ultra","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv19","userText":"создай идею 'секретная фича' в категории Secret","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv20","userText":"добавь идею 'железо' и поставь теги Hardware, !!!","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv21","userText":"покажи идеи со статусом New","expected":{"type":"tool","toolName":"notion.list_ideas"}}
+{"id":"adv22","userText":"покажи идеи со статусом new","expected":{"type":"tool","toolName":"notion.list_ideas"}}
+{"id":"adv23","userText":"обнови идею 1 и поставь статус New","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea"}}
+{"id":"adv24","userText":"идею 1 сделай приоритетом Ultra","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea"}}
+{"id":"adv25","userText":"идею 1 перенеси в категорию Secret","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea"}}
+{"id":"adv26","userText":"обнови идею 1: добавь метки abcdefghijklmnopqrstuvwxyz","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea"}}
+{"id":"adv27","userText":"найди идеи по запросу \"\\'; DROP TABLE ideas; --\"","expected":{"type":"tool","toolName":"notion.find_ideas"}}
+{"id":"adv28","userText":"архивируй идею 99","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"},{"index":2,"id":"i2","title":"Idea 2"}],"expected":{"type":"tool","toolName":"notion.archive_idea"}}
+{"id":"adv29","userText":"добавь идею 'клавиатура для кодеров' в раздел Devv","expected":{"type":"tool","toolName":"notion.create_idea"}}
+{"id":"adv30","userText":"обнови идею 1: поставь проект SuperSecretProject","lastShownIdeasList":[{"index":1,"id":"i1","title":"Idea 1"}],"expected":{"type":"tool","toolName":"notion.update_idea"}}
+
+{"id":"adv31","userText":"создай пост в Telegrm про релиз на завтра","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"adv32","userText":"добавь пост на платформу UnknownPlatform","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"adv33","userText":"создай пост в телеграм и поставь статус New","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"adv34","userText":"создай пост в телеграм и поставь content type UnknownType","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"adv35","userText":"покажи посты для платформы UnknownPlatform","expected":{"type":"tool","toolName":"notion.list_social_posts"}}
+{"id":"adv36","userText":"покажи посты со статусом New","expected":{"type":"tool","toolName":"notion.list_social_posts"}}
+{"id":"adv37","userText":"обнови статус поста 1 на New","lastShownSocialList":[{"index":1,"id":"s1","title":"Post 1"}],"expected":{"type":"tool","toolName":"notion.update_social_post"}}
+{"id":"adv38","userText":"обнови пост 1: поставь платформу UnknownPlatform","lastShownSocialList":[{"index":1,"id":"s1","title":"Post 1"}],"expected":{"type":"tool","toolName":"notion.update_social_post"}}
+{"id":"adv39","userText":"обнови пост 1: перенеси дату на 2026-99-99","lastShownSocialList":[{"index":1,"id":"s1","title":"Post 1"}],"expected":{"type":"tool","toolName":"notion.update_social_post"}}
+{"id":"adv40","userText":"найди посты по запросу \"\\'; DROP TABLE social; --\"","expected":{"type":"tool","toolName":"notion.find_social_posts"}}
+{"id":"adv41","userText":"архивируй второй пост","lastShownSocialList":[{"index":1,"id":"s1","title":"Post 1"},{"index":2,"id":"s2","title":"Post 2"}],"expected":{"type":"tool","toolName":"notion.archive_social_post"}}
+{"id":"adv42","userText":"покажи посты на этой неделе со статусом New","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_social_posts"}}
+
+{"id":"adv43","userText":"запиши в дневник тип 'Бред' и тему '???'","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+{"id":"adv44","userText":"запиши в дневник: настроение 10 энергия -1, день странный","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+{"id":"adv45","userText":"добавь запись в дневник на дату 2026-02-30: тест невалидной даты","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+{"id":"adv46","userText":"покажи записи дневника с типом UnknownType","expected":{"type":"tool","toolName":"notion.list_journal_entries"}}
+{"id":"adv47","userText":"покажи записи дневника на дату 32.13.2026","expected":{"type":"tool","toolName":"notion.list_journal_entries"}}
+{"id":"adv48","userText":"найди в дневнике \"\\'; DROP TABLE journal; --\"","expected":{"type":"tool","toolName":"notion.find_journal_entries"}}
+{"id":"adv49","userText":"запиши в дневник: очень длинный текст для стресс теста. lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
+{"id":"adv50","userText":"покажи задачи про 😀😀😀 и статус New","expected":{"type":"tool","toolName":"notion.list_tasks"}}

@@ -28,6 +28,13 @@ venv/
 # IDE
 .idea/
 
+# Local AI tool configs (may include secrets)
+.claude/
+
+# Temp folders created by local tooling
+tmpclaude-*
+nul
+
 # Cursor project settings
 .cursor/*
 !.cursor/rules

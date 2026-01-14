@@ -90,7 +90,8 @@ class NotionTasksRepo {
 
     // Status
     if (this._hasProp(schema, 'Status')) {
-      props.Status = { status: { name: status || 'Idle' } };
+      props.Status = { status: { name: status || undefined } };
+      if (!props.Status.status.name) delete props.Status;
     }
 
     const resp = await this._http.post('pages', {

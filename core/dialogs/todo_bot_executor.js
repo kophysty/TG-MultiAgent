@@ -308,12 +308,16 @@ function createToolExecutor({
       if (toolName === 'notion.create_task') {
         const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
         const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
+        const { status: statusOptions, priority: priorityOptions } = await tasksRepoForChat.getOptions();
+
         const title = String(args?.title || '').trim();
         const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
-        const priority = args?.priority ? String(args.priority) : null;
+        const rawPriority = args?.priority ? String(args.priority) : null;
+        const priority = pickBestOptionMatch({ input: rawPriority, options: priorityOptions }).value || null;
         const inferredDue = inferDueDateFromUserText({ userText, tz });
         const dueDate = inferredDue || (args?.dueDate ? normalizeDueDateInput({ dueDate: String(args.dueDate), tz }) : null);
-        const status = args?.status ? String(args.status) : 'Idle';
+        const rawStatus = args?.status ? String(args.status) : 'Idle';
+        const status = pickBestOptionMatch({ input: rawStatus, options: statusOptions }).value || undefined;
         const description = args?.description ? String(args.description) : null;
 
         // Dedup check: if a similar active task exists, ask before creating a duplicate.
@@ -358,15 +362,28 @@ function createToolExecutor({
 
       if (toolName === 'notion.create_idea') {
         const title = String(args?.title || '').trim();
-        const status = args?.status ? String(args.status) : 'Inbox';
-        const priority = args?.priority ? String(args.priority) : null;
+        const rawStatus = args?.status !== undefined && args?.status !== null ? String(args.status).trim() : '';
+        const rawPriority = args?.priority !== undefined && args?.priority !== null ? String(args.priority).trim() : '';
         let category = args?.category ?? null; // string|array|null
         const source = args?.source ? String(args.source) : undefined;
         const description = args?.description ? String(args.description) : null;
 
         // Prevent creating new Category options: match only against existing Notion options.
         // Also infer Category/Area/Tags from context when missing or when the model picks generic buckets.
-        const { category: categoryOptions, area: areaOptions, tags: tagOptions, areaType } = await ideasRepo.getOptions();
+        const { category: categoryOptions, area: areaOptions, tags: tagOptions, status: statusOptions, priority: priorityOptions, areaType } = await ideasRepo.getOptions();
+
+        // Status/Priority must match existing Notion options. If unknown or options are missing, do not send the field.
+        const pickStrictOption = (input, options) => {
+          const s = String(input || '').trim();
+          const opts = Array.isArray(options) ? options.filter(Boolean) : [];
+          if (!s) return undefined;
+          if (!opts.length) return undefined;
+          const r = pickBestOptionMatch({ input: s, options: opts, aliases: null });
+          if (r.unknown) return undefined;
+          return r.value || undefined;
+        };
+        const status = rawStatus ? pickStrictOption(rawStatus, statusOptions) : undefined;
+        const priority = rawPriority ? pickStrictOption(rawPriority, priorityOptions) : undefined;
 
         const baseText = [title, description, String(userText || '')].filter(Boolean).join('\n').toLowerCase();
         const wantsInboxExplicitly = /(в\s+инбокс|входящ|инбокс|inbox)/.test(baseText);
@@ -546,7 +563,7 @@ function createToolExecutor({
       }
 
       if (toolName === 'notion.update_idea') {
-        const { category: categoryOptions, tags: tagOptions, area: areaOptions, project: projectOptions } = await ideasRepo.getOptions();
+        const { category: categoryOptions, tags: tagOptions, area: areaOptions, project: projectOptions, status: statusOptions, priority: priorityOptions } = await ideasRepo.getOptions();
         let normCategory = args?.category !== undefined ? args.category : undefined;
         if (normCategory !== undefined && normCategory !== null) {
           const norm = normalizeMultiOptionValue({ value: normCategory, options: categoryOptions, aliases: null });
@@ -555,6 +572,27 @@ function createToolExecutor({
             normCategory = undefined;
           } else {
             normCategory = Array.isArray(normCategory) ? norm.value : norm.value[0] || null;
+          }
+        }
+
+        // Status/Priority normalization
+        let normStatus = args?.status !== undefined ? args.status : undefined;
+        if (normStatus !== undefined && normStatus !== null) {
+          const opts = Array.isArray(statusOptions) ? statusOptions.filter(Boolean) : [];
+          if (!opts.length) normStatus = undefined;
+          else {
+            const norm = pickBestOptionMatch({ input: normStatus, options: opts, aliases: null });
+            normStatus = norm.unknown ? undefined : norm.value || undefined;
+          }
+        }
+
+        let normPriority = args?.priority !== undefined ? args.priority : undefined;
+        if (normPriority !== undefined && normPriority !== null) {
+          const opts = Array.isArray(priorityOptions) ? priorityOptions.filter(Boolean) : [];
+          if (!opts.length) normPriority = undefined;
+          else {
+            const norm = pickBestOptionMatch({ input: normPriority, options: opts, aliases: null });
+            normPriority = norm.unknown ? undefined : norm.value || undefined;
           }
         }
 
@@ -612,8 +650,8 @@ function createToolExecutor({
 
         const patch = {
           title: args?.title ? String(args.title) : undefined,
-          status: args?.status ? String(args.status) : undefined,
-          priority: args?.priority ? String(args.priority) : undefined,
+          status: normStatus,
+          priority: normPriority,
           category: normCategory,
           tags: normTags,
           area: normArea !== undefined ? (normArea === null ? null : String(normArea)) : undefined,
@@ -638,7 +676,10 @@ function createToolExecutor({
         const limit = args?.limit ? Number(args.limit) : 15;
 
         const { platform: platforms, status: statuses } = await socialRepo.getOptions();
-        const status = normalizeSocialStatus({ status: rawStatus, statuses }).value;
+        const status =
+          Array.isArray(statuses) && statuses.length
+            ? normalizeSocialStatus({ status: rawStatus, statuses }).value
+            : null;
         const normPlatform = normalizeSocialPlatform({ platform: rawPlatform, platforms });
         if (!normPlatform.ok) {
           const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform_list`);
@@ -648,7 +689,10 @@ function createToolExecutor({
             payload: { draft: { queryText, status, limit }, platforms },
             createdAt: Date.now(),
           });
-          bot.sendMessage(chatId, 'Выбери платформу для списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+          const msg = hasNonEmptyOptionInput(rawPlatform)
+            ? 'Не вижу такую платформу среди доступных. Выбери из списка:'
+            : 'Выбери платформу для списка:';
+          bot.sendMessage(chatId, msg, buildPickPlatformKeyboard({ actionId, platforms }));
           return;
         }
 
@@ -774,32 +818,67 @@ function createToolExecutor({
 
       if (toolName === 'notion.create_social_post') {
         const title = String(args?.title || '').trim();
-        const platform = args?.platform ?? null; // string|array|null
-        const postDate = args?.postDate ? String(args.postDate) : null;
-        const contentType = args?.contentType ?? null;
-        const status = args?.status ? String(args.status) : 'Post Idea';
-        const postUrl = args?.postUrl ? String(args.postUrl) : null;
+        let platform = args?.platform !== undefined ? args.platform : undefined; // string|array|null|undefined
+        const postDate = args?.postDate !== undefined && args?.postDate !== null ? String(args.postDate) : undefined;
+        const contentType = args?.contentType !== undefined ? args.contentType : undefined;
+        const rawStatus = args?.status !== undefined && args?.status !== null ? String(args.status).trim() : '';
+        const postUrl = args?.postUrl !== undefined && args?.postUrl !== null ? String(args.postUrl) : undefined;
         const description = args?.description ? String(args.description) : null;
 
-        const { platform: platforms, status: statuses, contentType: contentTypes } = await socialRepo.getOptions();
-        const normalizedStatus = normalizeSocialStatus({ status, statuses }).value || 'Post Idea';
+        const { platform: platforms, status: statuses, contentType: contentTypes, platformType } = await socialRepo.getOptions();
+
+        const pickDefaultSocialPlatform = () => {
+          const opts = Array.isArray(platforms) ? platforms.filter(Boolean) : [];
+          if (!opts.length) return null;
+          const byKeys = ['tg', 'telegram', 'телеграм'];
+          for (const k of byKeys) {
+            const hit = opts.find((o) => normalizeOptionKey(o) === normalizeOptionKey(k));
+            if (hit) return hit;
+          }
+          const hit2 = opts.find((o) => {
+            const key = normalizeOptionKey(o);
+            return key.includes('telegram') || key.includes('телеграм') || key === 'tg' || key.includes('tg');
+          });
+          return hit2 || opts[0] || null;
+        };
+
+        const pickDefaultSocialStatus = () => {
+          const opts = Array.isArray(statuses) ? statuses.filter(Boolean) : [];
+          if (!opts.length) return undefined;
+          const preferred = ['Post Idea', 'Idea', 'Draft', 'Planned'];
+          for (const x of preferred) {
+            const hit = opts.find((o) => String(o).toLowerCase() === String(x).toLowerCase());
+            if (hit) return hit;
+          }
+          return opts[0];
+        };
+
+        const normalizedStatus =
+          Array.isArray(statuses) && statuses.length
+            ? (rawStatus ? normalizeSocialStatus({ status: rawStatus, statuses }).value : null) || pickDefaultSocialStatus()
+            : undefined;
         const normalizedContentType = normalizeSocialContentType({ contentType, contentTypes }).value;
         const inferredDate = !postDate ? inferDateFromText({ userText, tz }) : null;
-        const effectivePostDate = postDate || inferredDate;
+        const effectivePostDate = postDate || inferredDate || undefined;
 
         if (!platform || (Array.isArray(platform) && !platform.length)) {
-          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
-          pendingToolActionByChatId.set(chatId, {
-            id: actionId,
-            kind: 'social.pick_platform',
-            payload: {
-              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
-              platforms,
-            },
-            createdAt: Date.now(),
-          });
-          bot.sendMessage(chatId, 'Выбери платформу для поста:', buildPickPlatformKeyboard({ actionId, platforms }));
-          return;
+          const def = pickDefaultSocialPlatform();
+          if (!def) {
+            const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
+            pendingToolActionByChatId.set(chatId, {
+              id: actionId,
+              kind: 'social.pick_platform',
+              payload: {
+                draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
+                platforms,
+              },
+              createdAt: Date.now(),
+            });
+            bot.sendMessage(chatId, 'Выбери платформу для поста:', buildPickPlatformKeyboard({ actionId, platforms }));
+            return;
+          }
+          // Default platform: TG (or the best match in Notion options).
+          platform = def;
         }
 
         const normPlatform = normalizeSocialPlatform({ platform, platforms });
@@ -814,7 +893,23 @@ function createToolExecutor({
             },
             createdAt: Date.now(),
           });
-          bot.sendMessage(chatId, 'Не понял платформу. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+          bot.sendMessage(chatId, 'Не вижу такую платформу среди доступных. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+          return;
+        }
+
+        // If Platform is select but model returned multiple values, ask to pick one.
+        if (platformType === 'select' && Array.isArray(normPlatform.value) && normPlatform.value.length > 1) {
+          const actionId = makeId(`${chatId}:${Date.now()}:social.pick_platform`);
+          pendingToolActionByChatId.set(chatId, {
+            id: actionId,
+            kind: 'social.pick_platform',
+            payload: {
+              draft: { title, postDate: effectivePostDate, contentType: normalizedContentType, status: normalizedStatus, postUrl, description },
+              platforms,
+            },
+            createdAt: Date.now(),
+          });
+          bot.sendMessage(chatId, 'Платформа выбрана не однозначно. Выбери одну:', buildPickPlatformKeyboard({ actionId, platforms }));
           return;
         }
 
@@ -1083,7 +1178,11 @@ function createToolExecutor({
               payload: { draft: { ...args }, platforms },
               createdAt: Date.now(),
             });
-            bot.sendMessage(chatId, 'Не понял платформу для обновления. Выбери из списка:', buildPickPlatformKeyboard({ actionId, platforms }));
+            bot.sendMessage(
+              chatId,
+              'Не вижу такую платформу среди доступных для обновления. Выбери из списка:',
+              buildPickPlatformKeyboard({ actionId, platforms })
+            );
             return;
           }
           args = { ...args, platform: normPlatform.value };
@@ -1359,12 +1458,29 @@ function createToolExecutor({
       }
 
       if (toolName === 'notion.update_task') {
+        const board = typeof getTasksBoardModeForChat === 'function' ? await getTasksBoardModeForChat(chatId) : 'main';
+        const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
+        const { status: statusOptions, priority: priorityOptions } = await tasksRepoForChat.getOptions();
+
+        // Status/Priority normalization
+        let normStatus = args?.status !== undefined ? args.status : undefined;
+        if (normStatus !== undefined && normStatus !== null) {
+          const norm = pickBestOptionMatch({ input: normStatus, options: statusOptions, aliases: null });
+          normStatus = norm.value || undefined;
+        }
+
+        let normPriority = args?.priority !== undefined ? args.priority : undefined;
+        if (normPriority !== undefined && normPriority !== null) {
+          const norm = pickBestOptionMatch({ input: normPriority, options: priorityOptions, aliases: null });
+          normPriority = norm.value || undefined;
+        }
+
         const patch = {
           title: args?.title ? String(args.title) : undefined,
           tag: args?.tag ? normalizeCategoryInput(args.tag) : undefined,
-          priority: args?.priority ? String(args.priority) : undefined,
+          priority: normPriority,
           dueDate: args?.dueDate ? String(args.dueDate) : undefined,
-          status: args?.status ? String(args.status) : undefined,
+          status: normStatus,
         };
         const actionId = makeId(`${chatId}:${Date.now()}:notion.update_task:${resolvedPageId}`);
         pendingToolActionByChatId.set(chatId, {

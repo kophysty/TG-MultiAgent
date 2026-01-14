@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.9] - 2026-01-14
+### Fixed
+- Social: если указана неподдерживаемая платформа, бот просит выбрать из доступных (вместо "Не понял платформу") и не спамит ошибками при быстрых кликах.
+- Inline UX: устаревшие inline-клики больше не отправляют в чат сообщения "Выбор устарел. Попробуй еще раз." (используем toast через callback query).
+- Ideas: повторное архивирование одной и той же идеи больше не падает с `HTTP 400 validation_error` и отвечает "Похоже, эта идея уже в архиве."
+
+### Added (Evals)
+- Точечные датасеты для проверки P0 кейсов:
+  - `apps/evals/ds/14_2026-01-14_p0_social_focus.jsonl`
+  - `apps/evals/ds/15_2026-01-14_p0_ideas_archive_focus.jsonl`
+
+## [0.2.8] - 2026-01-13
+### Fixed
+- Валидация статусов и полей (select/status/multi_select) в Notion. Теперь бот нормализует или отбрасывает некорректные значения, чтобы избежать `HTTP 400 validation_error`.
+- Удалены жестко заданные дефолтные статусы (`Idle`, `Inbox`, `Post Idea`) в репозиториях Notion, чтобы Notion мог использовать дефолты из настроек базы данных.
+
+### Added (Evals)
+- Генераторы разнообразных датасетов для E2E тестирования:
+  - `gen_ds_06_diverse_core.js` -> 300 разнообразных core кейсов (tasks, ideas, social, journal, memory)
+  - `gen_ds_07_diverse_adversarial.js` -> 150 adversarial кейсов (невалидные данные, XSS, prompt injection)
+  - `gen_ds_08_stt_errors.js` -> 100 кейсов с типичными ошибками STT (склейки, опечатки, слова-паразиты)
+  - `gen_ds_09_memory_prefs.js` -> 80 кейсов для memory/preferences (save, delete, sync)
+  - `gen_ds_10_commands.js` -> 40 кейсов для реальных /commands бота
+  - `gen_ds_11_context.js` -> 50 контекстно-зависимых кейсов (chatHistory, workContext, memorySummary)
+  - `gen_ds_12_addon_create.js` -> 200 create-heavy кейсов для нагрузочного тестирования
+- Обновлен план E2E тестирования `.cursor/plans/13_*.plan.md` с новой структурой датасетов (920 кейсов total)
+
 ## Unreleased
 
 - Admin UI:
@@ -11,7 +38,8 @@ All notable changes to this project will be documented in this file.
   - Утренний дайджест включает "Посты сегодня" из Social Media Planner (исключая `Published` и `Cancelled`).
   - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
   - Добавлены подробные `TG_DEBUG=1` логи (tick snapshot, memory sync stats, /worker_run, отправки напоминаний).
-  - Bumped reminders worker version to `v0.1.9`.
+  - Fix: удаление/архивация preferences в Notion больше не “воскрешается” из Postgres (reconcile archived/missing по `preferences_sync.notion_page_id`).
+  - Bumped reminders worker version to `v0.1.10`.
 
 - Telegram polling:
   - При `409 Conflict` (другая инстанция бота делает getUpdates) отправляем предупреждение в админ-чат и останавливаем polling в текущем процессе.
@@ -22,7 +50,7 @@ All notable changes to this project will be documented in this file.
 - Chat memory UX (admin):
   - Добавлены команды `/chat_history` и `/chat_find` для просмотра/поиска по `chat_messages` в Postgres.
   - Planner теперь получает timestamps в `chatHistory`, чтобы корректнее отвечать на вопросы вида "что было в HH:MM".
-  - Bumped todo bot version to `v0.2.6`.
+  - Bumped todo bot version to `v0.2.7`.
 
 - Preferences UX and diagnostics:
   - Подтверждение сохранения preference: короткий вопрос и кнопки Да/Нет.
@@ -34,6 +62,7 @@ All notable changes to this project will be documented in this file.
   - При OpenAI 429 (rate limit) бот теперь отвечает пользователю, а не молчит.
   - При TG_AI=0 бот теперь не молчит в админ-чате на обычные текстовые сообщения: пишет подсказку как включить AI и как проверить /model.
   - `/model` теперь также показывает TG_AI и наличие OPENAI_API_KEY (set or missing).
+  - Добавлена админ-команда `/prefs_rm <номер|key>` для выключения preference (active=false) и отправки этого изменения в Notion.
 
 - Tasks fuzzy resolve:
   - Улучшен fuzzy-match для voice случаев, когда слова “склеены” (например `testworktask`), чтобы не показывать нерелевантный длинный список кандидатов.

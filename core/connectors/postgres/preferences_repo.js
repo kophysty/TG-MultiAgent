@@ -76,6 +76,25 @@ class PreferencesRepo {
     );
   }
 
+  async setPreferenceActiveWithSource({ chatId, scope = 'global', key, active, source = null }) {
+    const safeChatId = Number(chatId);
+    const safeScope = String(scope || 'global').trim() || 'global';
+    const safeKey = String(key || '').trim();
+    if (!Number.isFinite(safeChatId)) throw new Error('chatId is required');
+    if (!safeKey) throw new Error('key is required');
+    const safeSource = source === null || source === undefined ? null : String(source || '').trim() || null;
+
+    if (!safeSource) {
+      await this.setPreferenceActive({ chatId: safeChatId, scope: safeScope, key: safeKey, active });
+      return;
+    }
+
+    await this._pool.query(
+      `UPDATE preferences SET active = $4, source = $5, updated_at = NOW() WHERE chat_id = $1 AND scope = $2 AND pref_key = $3`,
+      [safeChatId, safeScope, safeKey, Boolean(active), safeSource]
+    );
+  }
+
   async listPreferencesForChat({ chatId, activeOnly = true } = {}) {
     const safeChatId = Number(chatId);
     if (!Number.isFinite(safeChatId)) throw new Error('chatId is required');
@@ -151,6 +170,23 @@ class PreferencesRepo {
     if (!safeExternalId) return null;
     const res = await this._pool.query(`SELECT * FROM preferences_sync WHERE external_id = $1`, [safeExternalId]);
     return res.rows && res.rows[0] ? res.rows[0] : null;
+  }
+
+  async listSyncRowsNeedingNotionReconcile({ limit = 20, olderThanMinutes = 60 } = {}) {
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 20), 200);
+    const safeOlder = Math.min(Math.max(0, Number(olderThanMinutes) || 0), 7 * 24 * 60);
+    const res = await this._pool.query(
+      `
+      SELECT external_id, chat_id, scope, pref_key, notion_page_id, updated_at
+      FROM preferences_sync
+      WHERE notion_page_id IS NOT NULL
+        AND updated_at < NOW() - ($2 || ' minutes')::interval
+      ORDER BY updated_at ASC
+      LIMIT $1
+      `,
+      [safeLimit, String(safeOlder)]
+    );
+    return res.rows || [];
   }
 
   async getMaxLastSeenNotionEditedAt({ overlapSeconds = 120 } = {}) {

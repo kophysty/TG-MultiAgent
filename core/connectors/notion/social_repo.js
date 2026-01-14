@@ -23,15 +23,30 @@ class NotionSocialRepo {
     return Boolean(schema && Object.prototype.hasOwnProperty.call(schema, name));
   }
 
+  _propType(schema, name) {
+    return schema?.[name]?.type || null;
+  }
+
   async getOptions() {
     const db = await this.getDatabase();
-    const platform = db.properties?.Platform?.multi_select?.options?.map((o) => o.name) || [];
-    const contentType = db.properties?.['Content type']?.multi_select?.options?.map((o) => o.name) || [];
+    const platformType = db.properties?.Platform?.type || null;
+    const platform =
+      db.properties?.Platform?.multi_select?.options?.map((o) => o.name) ||
+      db.properties?.Platform?.select?.options?.map((o) => o.name) ||
+      [];
+
+    const contentTypeType = db.properties?.['Content type']?.type || null;
+    const contentType =
+      db.properties?.['Content type']?.multi_select?.options?.map((o) => o.name) ||
+      db.properties?.['Content type']?.select?.options?.map((o) => o.name) ||
+      [];
     const status = db.properties?.Status?.status?.options?.map((o) => o.name) || [];
-    return { platform, contentType, status };
+    return { platform, contentType, status, platformType, contentTypeType };
   }
 
   async listPosts({ platform, status, excludeStatuses = null, requireDate = false, dateOnOrAfter, dateBefore, queryText, limit = 20 } = {}) {
+    const schema = await this._ensureSchema();
+    const platformPropType = this._propType(schema, 'Platform');
     const payload = {
       sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
       page_size: Math.min(Math.max(1, Number(limit) || 20), 100),
@@ -41,9 +56,11 @@ class NotionSocialRepo {
     if (platform) {
       const plats = Array.isArray(platform) ? platform : [platform];
       if (plats.length === 1) {
-        filters.push({ property: 'Platform', multi_select: { contains: plats[0] } });
+        if (platformPropType === 'select') filters.push({ property: 'Platform', select: { equals: plats[0] } });
+        else filters.push({ property: 'Platform', multi_select: { contains: plats[0] } });
       } else if (plats.length > 1) {
-        filters.push({ or: plats.map((p) => ({ property: 'Platform', multi_select: { contains: p } })) });
+        if (platformPropType === 'select') filters.push({ or: plats.map((p) => ({ property: 'Platform', select: { equals: p } })) });
+        else filters.push({ or: plats.map((p) => ({ property: 'Platform', multi_select: { contains: p } })) });
       }
     }
     if (status) {
@@ -82,18 +99,23 @@ class NotionSocialRepo {
       props['Post name'] = { title: [{ text: { content: String(title || '').trim() } }] };
     }
     if (platform !== undefined && this._hasProp(schema, 'Platform')) {
+      const t = this._propType(schema, 'Platform');
       const plats = Array.isArray(platform) ? platform : platform ? [platform] : [];
-      props.Platform = { multi_select: plats.filter(Boolean).map((p) => ({ name: p })) };
+      if (t === 'select') props.Platform = { select: plats.filter(Boolean)[0] ? { name: plats.filter(Boolean)[0] } : null };
+      else props.Platform = { multi_select: plats.filter(Boolean).map((p) => ({ name: p })) };
     }
     if (postDate !== undefined && this._hasProp(schema, 'Post date')) {
       props['Post date'] = { date: postDate ? { start: String(postDate) } : null };
     }
     if (contentType !== undefined && this._hasProp(schema, 'Content type')) {
+      const t = this._propType(schema, 'Content type');
       const types = Array.isArray(contentType) ? contentType : contentType ? [contentType] : [];
-      props['Content type'] = { multi_select: types.filter(Boolean).map((t) => ({ name: t })) };
+      if (t === 'select') props['Content type'] = { select: types.filter(Boolean)[0] ? { name: types.filter(Boolean)[0] } : null };
+      else props['Content type'] = { multi_select: types.filter(Boolean).map((x) => ({ name: x })) };
     }
     if (status !== undefined && this._hasProp(schema, 'Status')) {
-      props.Status = { status: { name: status || 'Post Idea' } };
+      const s = String(status || '').trim();
+      if (s) props.Status = { status: { name: s } };
     }
     if (postUrl !== undefined && this._hasProp(schema, 'Post URL')) {
       props['Post URL'] = { url: postUrl ? String(postUrl) : null };
@@ -115,20 +137,40 @@ class NotionSocialRepo {
       if (t) props['Post name'] = { title: [{ text: { content: t } }] };
     }
     if (platform !== undefined && this._hasProp(schema, 'Platform')) {
-      if (platform === null) props.Platform = { multi_select: [] };
-      else {
-        const plats = Array.isArray(platform) ? platform : platform ? [platform] : [];
-        props.Platform = { multi_select: plats.filter(Boolean).map((p) => ({ name: p })) };
+      const t = this._propType(schema, 'Platform');
+      if (t === 'select') {
+        if (platform === null) props.Platform = { select: null };
+        else {
+          const plats = Array.isArray(platform) ? platform : platform ? [platform] : [];
+          const first = plats.filter(Boolean)[0] || null;
+          props.Platform = { select: first ? { name: first } : null };
+        }
+      } else {
+        if (platform === null) props.Platform = { multi_select: [] };
+        else {
+          const plats = Array.isArray(platform) ? platform : platform ? [platform] : [];
+          props.Platform = { multi_select: plats.filter(Boolean).map((p) => ({ name: p })) };
+        }
       }
     }
     if (postDate !== undefined && this._hasProp(schema, 'Post date')) {
       props['Post date'] = { date: postDate ? { start: String(postDate) } : null };
     }
     if (contentType !== undefined && this._hasProp(schema, 'Content type')) {
-      if (contentType === null) props['Content type'] = { multi_select: [] };
-      else {
-        const types = Array.isArray(contentType) ? contentType : contentType ? [contentType] : [];
-        props['Content type'] = { multi_select: types.filter(Boolean).map((t) => ({ name: t })) };
+      const t = this._propType(schema, 'Content type');
+      if (t === 'select') {
+        if (contentType === null) props['Content type'] = { select: null };
+        else {
+          const types = Array.isArray(contentType) ? contentType : contentType ? [contentType] : [];
+          const first = types.filter(Boolean)[0] || null;
+          props['Content type'] = { select: first ? { name: first } : null };
+        }
+      } else {
+        if (contentType === null) props['Content type'] = { multi_select: [] };
+        else {
+          const types = Array.isArray(contentType) ? contentType : contentType ? [contentType] : [];
+          props['Content type'] = { multi_select: types.filter(Boolean).map((x) => ({ name: x })) };
+        }
       }
     }
     if (status !== undefined && this._hasProp(schema, 'Status')) {
@@ -169,8 +211,14 @@ class NotionSocialRepo {
     const props = page.properties || {};
     const titleParts = props['Post name']?.title || [];
     const title = titleParts.map((p) => p.plain_text || '').join('').trim();
-    const platform = (props.Platform?.multi_select || []).map((t) => t.name).filter(Boolean);
-    const contentType = (props['Content type']?.multi_select || []).map((t) => t.name).filter(Boolean);
+    const platform =
+      props.Platform?.select?.name
+        ? [props.Platform.select.name]
+        : (props.Platform?.multi_select || []).map((t) => t.name).filter(Boolean);
+    const contentType =
+      props['Content type']?.select?.name
+        ? [props['Content type'].select.name]
+        : (props['Content type']?.multi_select || []).map((t) => t.name).filter(Boolean);
     return {
       id: page.id,
       url: page.url,

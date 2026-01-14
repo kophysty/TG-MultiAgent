@@ -8,6 +8,21 @@
 - Notion - UI для ручного редактирования.
 - При конфликте приоритет у Notion: если пользователь изменил preference в Notion, воркер применит это в Postgres.
 
+## Удаление/очистка preferences (как "забыть")
+
+Есть 2 правильных способа убрать лишнее из памяти:
+
+1) **Через Notion UI (рекомендуется):**
+   - Не удаляй страницу preference из базы, а **сними галочку `Active`**.
+   - Воркер подтянет это изменение в Postgres и preference перестанет участвовать в prompt.
+
+2) **Через Telegram (admin):**
+   - `/prefs_pg` → увидеть список и номера
+   - `/prefs_rm 3` → выключить preference (ставит `active=false` в Postgres и отправляет это в Notion)
+
+Примечание:
+- Если preference был **удален/архивирован** в Notion (перемещен в Trash), воркер теперь умеет это распознавать по `preferences_sync.notion_page_id` и **не “воскрешает”** запись обратно из Postgres.
+
 ## Notion структуры
 
 Страница: [User-preferences](https://www.notion.so/web3-future/User-preferences-2d6535c900f080bda11afb55570e674c?t=2d8535c900f080de859b00a97357180a)

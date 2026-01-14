@@ -1,0 +1,4 @@
+{"id":"social_list_ff25a73b","userText":"что в инстаграме","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.list_social_posts"}}
+{"id":"social_create_880d1f74","userText":"новый пост Tutorial для новичков на завтра в инстаграм","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"social_create_ff5d3843","userText":"новый пост Отзыв пользователя на завтра в инстаграм","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_social_post"}}
+{"id":"social_create_unknown_0f00cafe","userText":"создай пост в myspace: тестовый пост","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"tool","toolName":"notion.create_social_post"}}

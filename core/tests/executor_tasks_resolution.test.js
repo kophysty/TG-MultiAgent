@@ -25,7 +25,11 @@ test('executor: update_task resolves pageId via taskIndex from lastShownListByCh
 
   const exec = createToolExecutor({
     bot,
-    tasksRepo: {}, // not used in this flow
+    tasksRepo: {
+      async getOptions() {
+        return { status: [], priority: [] };
+      },
+    },
     ideasRepo: null,
     socialRepo: null,
     journalRepo: null,

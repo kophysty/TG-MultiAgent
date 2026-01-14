@@ -747,6 +747,9 @@ async function main() {
       push_rescheduled: 0,
       pull_applied: 0,
       pull_seen: 0,
+      reconcile_checked: 0,
+      reconcile_archived: 0,
+      reconcile_missing: 0,
       profile_enqueued: 0,
       touched_chats: 0,
     };
@@ -791,7 +794,55 @@ async function main() {
                 String(safePayload.key || '').startsWith('memory.note.')
               )
                 safePayload.category = null;
-              const res = await notionPrefsRepo.upsertPreferencePage(safePayload);
+
+              // If user deleted (archived) the Notion page manually, do not resurrect from Postgres.
+              // Notion edits win: if Notion archived time is newer than this payload.updatedAt, mark pref inactive in Postgres.
+              const syncRow = externalId ? await prefsRepo.getSyncRowByExternalId({ externalId }) : null;
+              const notionPageId = syncRow?.notion_page_id ? String(syncRow.notion_page_id) : null;
+              let shouldUnarchive = false;
+              if (notionPageId) {
+                try {
+                  const rawPage = await notionPrefsRepo.retrievePage({ pageId: notionPageId });
+                  const parsed = notionPrefsRepo.parsePreferencePage(rawPage);
+                  if (parsed?.archived) {
+                    const notionEditedAtMs = parsed?.notionEditedAt ? new Date(parsed.notionEditedAt).getTime() : NaN;
+                    const payloadUpdatedAtMs = safePayload?.updatedAt ? new Date(String(safePayload.updatedAt)).getTime() : NaN;
+                    if (Number.isFinite(notionEditedAtMs) && Number.isFinite(payloadUpdatedAtMs) && notionEditedAtMs > payloadUpdatedAtMs) {
+                      await prefsRepo.setPreferenceActiveWithSource({
+                        chatId: safePayload.chatId,
+                        scope: safePayload.scope || 'global',
+                        key: safePayload.key,
+                        active: false,
+                        source: 'notion',
+                      });
+                      await prefsRepo.upsertSyncRow({
+                        externalId,
+                        chatId: safePayload.chatId,
+                        scope: safePayload.scope || 'global',
+                        key: safePayload.key,
+                        notionPageId,
+                        lastSeenNotionEditedAt: parsed.notionEditedAt || new Date().toISOString(),
+                      });
+                      await prefsRepo.deleteQueueItem({ id: it.id });
+                      stats.push_ok += 1;
+                      continue;
+                    }
+                    // If Postgres update is newer and this upsert intends to keep it active, unarchive the Notion page.
+                    const wantActive = Boolean(safePayload?.active);
+                    if (wantActive && Number.isFinite(notionEditedAtMs) && Number.isFinite(payloadUpdatedAtMs) && payloadUpdatedAtMs >= notionEditedAtMs) {
+                      shouldUnarchive = true;
+                    }
+                  }
+                } catch {
+                  // ignore and proceed with normal upsert
+                }
+              }
+
+              const res = await notionPrefsRepo.upsertPreferencePage({
+                ...safePayload,
+                pageId: notionPageId || null,
+                unarchive: Boolean(shouldUnarchive),
+              });
               const pushedHash = it.payload_hash ? String(it.payload_hash) : null;
               if (externalId && pushedHash) {
                 await prefsRepo.upsertSyncRow({
@@ -902,6 +953,76 @@ async function main() {
       if (!cursor) break;
     }
     debugLog('memory_pull_done', { pull_seen: stats.pull_seen, pull_applied: stats.pull_applied, touched: touchedChats.size });
+
+    // 2.5) Reconcile manual deletions in Notion (archived pages are not returned by database query).
+    // We periodically re-check known Notion page ids from preferences_sync.
+    try {
+      const batch = await prefsRepo.listSyncRowsNeedingNotionReconcile({
+        limit: stats.forced ? 80 : 20,
+        olderThanMinutes: stats.forced ? 0 : 60,
+      });
+      for (const r of batch) {
+        const externalId = String(r?.external_id || '').trim();
+        const chatId = Number(r?.chat_id);
+        const scope = String(r?.scope || 'global').trim() || 'global';
+        const key = String(r?.pref_key || '').trim();
+        const pageId = String(r?.notion_page_id || '').trim();
+        if (!externalId || !Number.isFinite(chatId) || !key || !pageId) continue;
+        stats.reconcile_checked += 1;
+        try {
+          const rawPage = await notionPrefsRepo.retrievePage({ pageId });
+          const parsed = notionPrefsRepo.parsePreferencePage(rawPage);
+          if (parsed?.archived) {
+            await prefsRepo.setPreferenceActiveWithSource({ chatId, scope, key, active: false, source: 'notion' });
+            await prefsRepo.upsertSyncRow({
+              externalId,
+              chatId,
+              scope,
+              key,
+              notionPageId: pageId,
+              lastSeenNotionEditedAt: parsed.notionEditedAt || new Date().toISOString(),
+            });
+            touchedChats.add(chatId);
+            stats.reconcile_archived += 1;
+          } else {
+            // Touch sync row so we don't re-check too often.
+            await prefsRepo.upsertSyncRow({
+              externalId,
+              chatId,
+              scope,
+              key,
+              notionPageId: pageId,
+              lastSeenNotionEditedAt: parsed?.notionEditedAt || new Date().toISOString(),
+            });
+          }
+        } catch (e) {
+          // If the page is missing (404), treat it as deleted.
+          const status = e?.response?.status || null;
+          if (status === 404) {
+            await prefsRepo.setPreferenceActiveWithSource({ chatId, scope, key, active: false, source: 'notion' });
+            await prefsRepo.upsertSyncRow({
+              externalId,
+              chatId,
+              scope,
+              key,
+              notionPageId: pageId,
+              lastSeenNotionEditedAt: new Date().toISOString(),
+            });
+            touchedChats.add(chatId);
+            stats.reconcile_missing += 1;
+          }
+        }
+      }
+    } catch {
+      // best-effort
+    }
+    if (stats.reconcile_checked) {
+      debugLog('memory_reconcile_done', {
+        checked: stats.reconcile_checked,
+        archived: stats.reconcile_archived,
+        missing: stats.reconcile_missing,
+      });
+    }
 
     // 3) Update per-chat profile summary in Notion (write-through queue).
     if (profilesDbId) {

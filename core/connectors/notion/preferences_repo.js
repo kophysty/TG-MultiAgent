@@ -24,6 +24,13 @@ class NotionPreferencesRepo {
     this._http = createNotionHttpClient({ notionToken, eventLogRepo, component: 'notion' });
   }
 
+  async retrievePage({ pageId }) {
+    const safe = String(pageId || '').trim();
+    if (!safe) throw new Error('pageId is required');
+    const resp = await this._http.get(`pages/${safe}`);
+    return resp.data;
+  }
+
   async findPreferencePageByExternalId({ externalId }) {
     const safe = String(externalId || '').trim();
     if (!safe) return null;
@@ -38,6 +45,8 @@ class NotionPreferencesRepo {
   }
 
   async upsertPreferencePage({
+    pageId = null,
+    unarchive = false,
     externalId,
     chatId,
     scope,
@@ -73,6 +82,14 @@ class NotionPreferencesRepo {
     if (scope) props.Scope = { select: { name: String(scope) } };
     if (category) props.Category = { select: { name: String(category) } };
     if (lastSource) props.LastSource = { select: { name: String(lastSource) } };
+
+    const safePageId = String(pageId || '').trim();
+    if (safePageId) {
+      const body = { properties: props };
+      if (unarchive) body.archived = false;
+      const resp = await this._http.patch(`pages/${safePageId}`, body);
+      return { pageId: safePageId, page: resp.data, created: false };
+    }
 
     const found = await this.findPreferencePageByExternalId({ externalId: safeExternalId });
     if (found && found.pageId) {

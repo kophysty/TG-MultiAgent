@@ -1079,6 +1079,7 @@ async function registerTodoBot({
   const lastShownSocialListByChatId = new Map(); // chatId -> [{ index, id, title }] (social posts)
   const lastShownJournalListByChatId = new Map(); // chatId -> [{ index, id, title }] (journal)
   const lastShownHistoryByChatId = new Map(); // chatId -> [{ index, file }] (execution_history)
+  const lastShownPrefsListByChatId = new Map(); // chatId -> [{ index, scope, key, category }]
   const tz = process.env.TG_TZ || 'Europe/Moscow';
   // Model control:
   // - Preferred: TG_AI_MODEL (documented)
@@ -2062,6 +2063,7 @@ async function registerTodoBot({
       '- /cmnds (алиас: /commands) - показать этот список',
       '- /model - показать активные модели (AI, prefs extractor, STT)',
       '- /prefs_pg - показать preferences строго из Postgres (по текущему чату)',
+      '- /prefs_rm <номер|key> - выключить preference (active=false) и отправить это в Notion',
       '- /worker_run - попросить reminders worker сделать синхронизацию memory (Notion <-> Postgres) сейчас (без отправки напоминаний)',
       '- /errors [hours] - последние ошибки (event_log) по текущему чату, по умолчанию 24ч',
       '- /chat_history [N] - показать последние N сообщений из chat memory (по умолчанию 30)',
@@ -2136,6 +2138,7 @@ async function registerTodoBot({
       bot.sendMessage(chatId, '(preferences пусто)');
       return;
     }
+    const shown = [];
     const lines = ['Preferences (Postgres):', ''];
     for (const r of rows.slice(0, 30)) {
       const key = String(r.pref_key || '').trim();
@@ -2144,9 +2147,102 @@ async function registerTodoBot({
       const src = String(r.source || '').trim() || '-';
       const upd = r.updated_at ? String(r.updated_at).slice(0, 19).replace('T', ' ') : '';
       const label = cat === 'memory_note' ? 'memory' : key;
-      lines.push(`- ${label}: ${val || '(empty)'} (source=${src}${upd ? `, updated=${upd}` : ''})`);
+      const idx = shown.length + 1;
+      shown.push({ index: idx, scope: String(r.scope || 'global').trim() || 'global', key, category: cat });
+      const keyHint = cat === 'memory_note' ? `key=${key}` : '';
+      lines.push(
+        `${idx}) ${label}: ${val || '(empty)'} (${[keyHint, `source=${src}`, upd ? `updated=${upd}` : null].filter(Boolean).join(', ')})`
+      );
     }
+    lastShownPrefsListByChatId.set(chatId, shown);
+    lines.push('');
+    lines.push('Удаление: /prefs_rm <номер|key> (пример: /prefs_rm 2)');
     await sendLongMessage({ bot, chatId, text: lines.join('\n') });
+  });
+
+  bot.onText(/^\/prefs_rm(?:\s+(.+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!preferencesRepo) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL.');
+      return;
+    }
+
+    const rawArg = match && match[1] ? String(match[1]).trim() : '';
+    if (!rawArg) {
+      bot.sendMessage(chatId, 'Укажи что удалить: /prefs_rm <номер|key>. Сначала посмотри /prefs_pg.');
+      return;
+    }
+
+    let scope = 'global';
+    let key = '';
+    const asNum = Number(rawArg);
+    if (Number.isFinite(asNum) && String(asNum) === String(Math.trunc(asNum)) && asNum >= 1 && asNum <= 200) {
+      const list = lastShownPrefsListByChatId.get(chatId) || [];
+      const it = list.find((x) => Number(x.index) === Math.trunc(asNum)) || null;
+      if (!it) {
+        bot.sendMessage(chatId, 'Не нашел такой номер. Обнови список через /prefs_pg и попробуй снова.');
+        return;
+      }
+      scope = String(it.scope || 'global').trim() || 'global';
+      key = String(it.key || '').trim();
+    } else {
+      // direct key
+      key = String(rawArg).trim();
+      scope = 'global';
+    }
+
+    if (!key) {
+      bot.sendMessage(chatId, 'Не получилось определить key. Обнови /prefs_pg и попробуй снова.');
+      return;
+    }
+
+    // Mark inactive in Postgres.
+    try {
+      await preferencesRepo.setPreferenceActiveWithSource({ chatId, scope, key, active: false, source: 'postgres' });
+      // Invalidate memory cache for this chat so next planner context is fresh.
+      memoryCacheByChatId.delete(chatId);
+    } catch (e) {
+      bot.sendMessage(chatId, `Не получилось обновить preference в Postgres. Ошибка: ${String(e?.message || e)}`);
+      return;
+    }
+
+    // Push to Notion (best-effort): set Active=false in Notion page.
+    try {
+      const row = await preferencesRepo.getPreference({ chatId, scope, key, activeOnly: false });
+      const categoryRaw = row?.category === null || row?.category === undefined ? null : String(row.category || '').trim() || null;
+      const category = categoryRaw === 'memory_note' || categoryRaw === 'settings' ? null : categoryRaw;
+      const externalId = preferencesRepo.makeExternalId({ chatId, scope, key });
+      const valueHuman = row?.value_human === null || row?.value_human === undefined ? null : String(row.value_human || '').trim() || null;
+      const valueJsonStr = JSON.stringify(row?.value_json || {});
+      const payload = {
+        externalId,
+        chatId,
+        scope,
+        category,
+        key,
+        active: false,
+        valueHuman,
+        valueJson: valueJsonStr,
+        syncHash: md5Hex(JSON.stringify({ externalId, chatId, scope, key, active: false, valueHuman, valueJsonStr })),
+        lastSource: 'postgres',
+        updatedAt: new Date().toISOString(),
+      };
+      await preferencesRepo.enqueueNotionSync({
+        kind: 'pref_page_upsert',
+        externalId,
+        payload,
+        payloadHash: md5Hex(JSON.stringify(payload)),
+      });
+    } catch {
+      // best-effort
+    }
+
+    bot.sendMessage(chatId, `Ок. Отключил preference: ${key}`);
   });
 
   bot.onText(/^\/worker_run\s*$/i, async (msg) => {
@@ -2191,7 +2287,7 @@ async function registerTodoBot({
           valueJson: valueJsonStr,
           syncHash: md5Hex(JSON.stringify({ externalId, chatId, scope, key, active: true, valueHuman, valueJsonStr })),
           lastSource: String(r?.source || 'postgres'),
-          updatedAt: new Date().toISOString(),
+          updatedAt: r?.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
         };
         await preferencesRepo.enqueueNotionSync({
           kind: 'pref_page_upsert',

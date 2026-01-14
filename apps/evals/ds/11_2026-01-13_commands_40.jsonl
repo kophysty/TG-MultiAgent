@@ -1,0 +1,40 @@
+{"id":"cmd_start_1","userText":"/start","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"start"}}
+{"id":"cmd_start_2","userText":"/start ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"start"}}
+{"id":"cmd_list_1","userText":"/list","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"list"}}
+{"id":"cmd_list_2","userText":"/list ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"list"}}
+{"id":"cmd_list_3","userText":"/list\n","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"list"}}
+{"id":"cmd_today_1","userText":"/today","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"today"}}
+{"id":"cmd_today_2","userText":"/today ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"today"}}
+{"id":"cmd_today_3","userText":"/Today","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","comment":"Case sensitivity test","expected":{"typeAnyOf":["command","chat","tool"]}}
+{"id":"cmd_addtask_1","userText":"/addtask","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"addtask"}}
+{"id":"cmd_addtask_2","userText":"/addtask тест","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"addtask"}}
+{"id":"cmd_addtask_3","userText":"/addtask купить молоко","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"addtask"}}
+{"id":"cmd_commands_1","userText":"/commands","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"commands"}}
+{"id":"cmd_cmnds_1","userText":"/cmnds","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"cmnds"}}
+{"id":"cmd_prefs_pg_1","userText":"/prefs_pg","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"prefs_pg"}}
+{"id":"cmd_prefs_pg_2","userText":"/prefs_pg ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"prefs_pg"}}
+{"id":"cmd_prefs_pg_3","userText":"/PREFS_PG","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","comment":"Case sensitivity test","expected":{"typeAnyOf":["command","chat","tool"]}}
+{"id":"cmd_prefs_rm_1","userText":"/prefs_rm 1","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"prefs_rm"}}
+{"id":"cmd_prefs_rm_2","userText":"/prefs_rm timezone","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"prefs_rm"}}
+{"id":"cmd_prefs_rm_3","userText":"/prefs_rm","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","comment":"Missing argument - should ask for clarification","expected":{"type":"command","command":"prefs_rm"}}
+{"id":"cmd_model_1","userText":"/model","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"model"}}
+{"id":"cmd_model_2","userText":"/model ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"model"}}
+{"id":"cmd_struct_1","userText":"/struct","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"struct"}}
+{"id":"cmd_struct_2","userText":"/struct ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"struct"}}
+{"id":"cmd_worker_run_1","userText":"/worker_run","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"worker_run"}}
+{"id":"cmd_worker_run_2","userText":"/worker_run ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"worker_run"}}
+{"id":"cmd_errors_1","userText":"/errors","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"errors"}}
+{"id":"cmd_errors_2","userText":"/errors 5","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"errors"}}
+{"id":"cmd_chat_history_1","userText":"/chat_history","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_history"}}
+{"id":"cmd_chat_history_2","userText":"/chat_history 10","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_history"}}
+{"id":"cmd_chat_history_3","userText":"/chat_history 50","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_history"}}
+{"id":"cmd_chat_find_1","userText":"/chat_find тест","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_find"}}
+{"id":"cmd_chat_find_2","userText":"/chat_find релиз","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_find"}}
+{"id":"cmd_chat_find_3","userText":"/chat_find","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","comment":"Missing argument","expected":{"type":"command","command":"chat_find"}}
+{"id":"cmd_chat_at_1","userText":"/chat_at 10:00","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_at"}}
+{"id":"cmd_chat_at_2","userText":"/chat_at 14:30 5","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"chat_at"}}
+{"id":"cmd_sessions_1","userText":"/sessions","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"sessions"}}
+{"id":"cmd_sessions_2","userText":"/sessions 10","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"sessions"}}
+{"id":"cmd_security_status_1","userText":"/security_status","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"security_status"}}
+{"id":"cmd_security_status_2","userText":"/security_status ","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","expected":{"type":"command","command":"security_status"}}
+{"id":"cmd_start_button","userText":"Start","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","comment":"Button text instead of command","expected":{"type":"command","command":"start"}}

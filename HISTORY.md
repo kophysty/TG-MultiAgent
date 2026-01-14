@@ -119,6 +119,15 @@
   - Bumped todo bot version to `v0.1.26`.
   - Bumped reminders worker version to `v0.1.2`.
 
+## 2026-01-14
+
+- Social platform UX:
+  - Если указана неподдерживаемая платформа (например "инстаграм"), бот просит выбрать из доступных платформ, вместо формулировки "Не понял платформу".
+  - Устаревшие inline клики больше не спамят чат сообщением "Выбор устарел" (toast через callback query).
+- Ideas archive:
+  - Повторное архивирование уже архивированной идеи обрабатывается идемпотентно: бот отвечает что идея уже в архиве.
+- Bumped todo bot version to `v0.2.9`.
+
 - Work context cache:
   - Добавлена таблица `work_context_cache` (Postgres).
   - Worker периодически собирает компактный контекст из Notion (Tasks, Ideas, Social) и сохраняет per chat_id.
@@ -244,6 +253,22 @@
   - Добавлены напоминания за `TG_REMINDERS_BEFORE_MINUTES` минут до `Post date` для постов (исключая `Published` и `Cancelled`).
   - Bumped reminders worker version to `v0.1.7`.
 
+## 2026-01-13
+
+- **Validation Fix**: Исправлена ошибка `validation_error` в Notion при попытке отправить несуществующий статус или опцию. Добавлена нормализация полей `Status`, `Priority`, `Category`, `Area`, `Platform` и `Content type` во всех инструментах Notion.
+- **Dataset Expansion**: Датасет тестов `apps/evals/ds/03_2026-01-13_full_features.jsonl` расширен кейсами с "невалидными" данными для проверки устойчивости бота.
+- **Notion Repositories**: Удалены хардкод-дефолты для статусов, позволяя Notion использовать настройки базы по умолчанию.
+- Bumped todo bot version to `v0.2.8`.
+- **Evals Datasets (comprehensive E2E testing)**:
+  - Новый генератор `gen_ds_06_diverse_core.js` -> 300 разнообразных core кейсов
+  - Новый генератор `gen_ds_07_diverse_adversarial.js` -> 150 adversarial кейсов (XSS, prompt injection, невалидные данные)
+  - Новый генератор `gen_ds_08_stt_errors.js` -> 100 кейсов STT ошибок (склейки, опечатки, слова-паразиты)
+  - Новый генератор `gen_ds_09_memory_prefs.js` -> 80 кейсов memory/preferences
+  - Новый генератор `gen_ds_10_commands.js` -> 40 кейсов реальных /commands бота
+  - Новый генератор `gen_ds_11_context.js` -> 50 контекстно-зависимых кейсов
+  - Новый генератор `gen_ds_12_addon_create.js` -> 200 create-heavy кейсов
+  - Обновлен план E2E `.cursor/plans/13_*.plan.md`: Mode B, trash cleanup, full reporting, 920 кейсов total
+
 ## 2026-01-12
 
 - Preferences and memory notes:
@@ -253,7 +278,9 @@
   - Исправлено: при TG_AI=0 бот не молчит в админ-чате на обычный текст и пишет подсказку как включить AI.
   - Добавлены подробные `TG_DEBUG=1` логи в reminders worker (tick snapshot, memory sync stats, /worker_run, отправки напоминаний).
   - `/model` теперь также показывает TG_AI и наличие OPENAI_API_KEY.
-  - Bumped todo bot version to `v0.2.6`.
-  - Bumped reminders worker version to `v0.1.9`.
+  - Fix: удаление/архивация preferences в Notion больше не “воскрешается” из Postgres.
+  - Добавлена команда `/prefs_rm` для удаления/отключения preferences из памяти.
+  - Bumped todo bot version to `v0.2.7`.
+  - Bumped reminders worker version to `v0.1.10`.
 
 
