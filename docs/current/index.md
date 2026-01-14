@@ -4,7 +4,7 @@
 
 ## Версия
 
-- Текущая версия todo bot: `v0.2.7`
+- Текущая версия todo bot: `v0.2.13`
 
 ## Разделы
 
@@ -15,12 +15,14 @@
 - [Напоминалки (текущая реализация)](./reminders.md)
 - [Memory и предпочтения (текущая реализация)](./memory.md)
 - [Безопасность (sessions, notify, revoke)](./security.md)
+- [Деплой (production)](./deploy.md)
 
 ## Компоненты
 
 - `apps/todo_bot` - Telegram bot (polling) + Notion CRUD + AI (опционально).
 - `core/connectors/notion` - Notion API клиент и репозитории (Tasks, Ideas, Social Media Planner, Journal).
-- `core/dialogs/todo_bot.js` - команды и логика диалогов бота.
+- `core/dialogs/todo_bot.js` - основная логика бота (сообщения, voice, planner, исполнение).
+- `core/dialogs/todo_bot_admin.js` - admin команды и диагностика (healthcheck, reboot, chat memory, history).
 - `infra/docker-compose.yml` - Postgres и n8n (опционально, пока не обязательны).
 
 ## Переменные окружения (минимум)

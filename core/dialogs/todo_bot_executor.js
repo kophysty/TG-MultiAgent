@@ -38,6 +38,10 @@ const {
   inferIndexFromText,
   inferSocialWeekRangeFromText,
   inferTasksWeekRangeFromText,
+  formatTaskCreateSummary,
+  formatIdeaCreateSummary,
+  formatSocialPostCreateSummary,
+  formatJournalEntryCreateSummary,
 } = require('./todo_bot_helpers');
 
 const { getTraceId } = require('../runtime/trace_context');
@@ -338,7 +342,7 @@ function createToolExecutor({
 
         const created = await tasksRepoForChat.createTask({ title, tag, priority, dueDate, status });
         if (description) await tasksRepoForChat.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
+        bot.sendMessage(chatId, formatTaskCreateSummary({ created, board }));
         return;
       }
 
@@ -558,7 +562,7 @@ function createToolExecutor({
 
         const created = await ideasRepo.createIdea({ title, status, priority, category, source, area, tags });
         if (description) await ideasRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
+        bot.sendMessage(chatId, formatIdeaCreateSummary({ created }));
         return;
       }
 
@@ -945,7 +949,7 @@ function createToolExecutor({
           postUrl,
         });
         if (description) await socialRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
+        bot.sendMessage(chatId, formatSocialPostCreateSummary({ created }));
         return;
       }
 
@@ -1116,7 +1120,7 @@ function createToolExecutor({
           context: finalContext,
         });
         if (description) await journalRepo.appendDescription({ pageId: created.id, text: description });
-        bot.sendMessage(chatId, `Готово. Добавил запись в дневник: ${created.title}`);
+        bot.sendMessage(chatId, formatJournalEntryCreateSummary({ created }));
         return;
       }
 

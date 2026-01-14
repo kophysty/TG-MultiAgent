@@ -1,5 +1,13 @@
 # History
 
+## 2026-01-15
+
+- Summary после создания записей в Notion: добавлены форматтеры `formatTaskCreateSummary`, `formatIdeaCreateSummary`, `formatSocialPostCreateSummary`, `formatJournalEntryCreateSummary` в `core/dialogs/todo_bot_helpers.js`. После создания задач, идей, постов и записей дневника бот теперь показывает детальную информацию: база, категория, статус, приоритет, даты, ссылка на Notion и т.д. Применено в `core/dialogs/todo_bot_executor.js` и `core/dialogs/todo_bot_callbacks.js` (включая путь после подтверждения dedup).
+- Deploy и ops:
+  - Healthcheck: в Notion секции добавлен вывод хвостов DB ID для быстрой визуальной сверки.
+  - Добавлены скрипты `infra/db/migrate.sh` (идемпотентные миграции) и `infra/deploy/prod_deploy.sh` (единый prod deploy flow).
+  - Добавлен runbook `docs/devops/deploy.md` и ссылка на него в `docs/devops/index.md` и `README.md`.
+
 ## 2025-12-24
 
 - Initialized project documentation based on Notion "Base structure".
@@ -120,6 +128,17 @@
   - Bumped reminders worker version to `v0.1.2`.
 
 ## 2026-01-14
+
+- Tech:
+  - Bumped todo bot version to `v0.2.11` for тестовый прогон после predeploy изменений.
+
+- Predeploy readiness:
+  - Docker prod: в образах bot и worker ставятся зависимости `core` (npm ci в `/app/core`).
+  - Docker build: добавлен `.dockerignore`, чтобы сборка не тащила `node_modules` и `data`.
+  - Admin: добавлены команды `/healthcheck` (алиас `/hc`) и `/healthcheck_json` в Telegram.
+  - Admin: добавлены команды `/restart_polling` и `/restart_process confirm`.
+  - Admin: вынесены admin команды и диагностика в `core/dialogs/todo_bot_admin.js`.
+  - Bumped todo bot version to `v0.2.10`.
 
 - Social platform UX:
   - Если указана неподдерживаемая платформа (например "инстаграм"), бот просит выбрать из доступных платформ, вместо формулировки "Не понял платформу".

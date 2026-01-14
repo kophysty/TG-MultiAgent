@@ -2,6 +2,10 @@
 
 Этот раздел - практические заметки по запуску, обслуживанию и типовым техническим манипуляциям в проекте.
 
+## Разделы
+
+- [Деплой (prod runbook)](./deploy.md)
+
 ## Принципы
 
 - Notion - первоисточник и витрина
@@ -34,7 +38,27 @@
 
 ### Миграции
 
-- Применяем SQL миграции из `infra/db/migrations/` внутри контейнера Postgres.
+- Миграции должны быть применены до запуска bot и worker в prod, иначе часть функций будет отключена или healthcheck будет падать.
+- Команда проверки: `node core/runtime/healthcheck.js --postgres`
+- Для prod рекомендованный способ - скрипт `infra/db/migrate.sh` (идемпотентный, трекает примененные файлы).
+
+#### Пример: применить миграции (prod compose)
+
+Предпосылки:
+
+- Docker Compose поднял сервис `postgres` (контейнер `tg-multiagent-postgres`).
+- В `.env` заданы `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (или используются дефолты из prod compose).
+
+Команда (Git Bash):
+
+- Посмотреть статус:
+  - `bash infra/db/migrate.sh --status`
+- Применить все, что еще не применено:
+  - `bash infra/db/migrate.sh --apply`
+
+После этого:
+
+- `node core/runtime/healthcheck.js --postgres` должен показать `Result: OK`
 
 ## Notion доступы
 

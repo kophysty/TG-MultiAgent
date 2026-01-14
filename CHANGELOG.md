@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.13] - 2026-01-15
+### Added
+- Healthcheck: в Notion секции теперь показываем хвосты DB ID (например `(...dbe7c)`), чтобы быстро сверять что env указывает на правильные базы.
+- Deploy: добавлен идемпотентный скрипт миграций `infra/db/migrate.sh` (с трекингом примененных файлов) и единый сценарий `infra/deploy/prod_deploy.sh` (postgres -> wait healthy -> migrate -> up bot/worker -> healthcheck).
+- Docs: добавлен prod runbook `docs/devops/deploy.md`.
+
+## [0.2.12] - 2026-01-15
+### Added
+- Summary после создания записей в Notion: бот теперь показывает детальную информацию о созданных задачах, идеях, постах и записях дневника (база, категория, статус, приоритет, даты, ссылка на Notion и т.д.).
+
+## [0.2.11] - 2026-01-14
+### Added
+- Технический bump версии для тестирования после predeploy изменений.
+
+## [0.2.10] - 2026-01-14
+### Added
+- Admin: команды `/healthcheck` (алиас `/hc`) и `/healthcheck_json` прямо из Telegram (Postgres + Notion).
+- Admin: команды `/restart_polling` и `/restart_process confirm` для управления ботом без доступа к серверу.
+
+### Fixed
+- Docker prod: в образах bot и worker теперь устанавливаются зависимости `core` (иначе падало на `require('pg')`).
+- Docker build: добавлен `.dockerignore`, чтобы сборка не тащила `node_modules` и `data`.
+
 ## [0.2.9] - 2026-01-14
 ### Fixed
 - Social: если указана неподдерживаемая платформа, бот просит выбрать из доступных (вместо "Не понял платформу") и не спамит ошибками при быстрых кликах.

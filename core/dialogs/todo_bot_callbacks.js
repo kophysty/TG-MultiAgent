@@ -14,6 +14,10 @@ const {
   inferJournalContextFromText,
   inferMoodEnergyFromText,
   extractNotionErrorInfo,
+  formatTaskCreateSummary,
+  formatIdeaCreateSummary,
+  formatSocialPostCreateSummary,
+  formatJournalEntryCreateSummary,
 } = require('./todo_bot_helpers');
 
 const crypto = require('crypto');
@@ -168,19 +172,20 @@ function createCallbackQueryHandler({
             if (safePayload.dueDate) safePayload.dueDate = normalizeDueDateInput({ dueDate: safePayload.dueDate, tz: process.env.TG_TZ || 'Europe/Moscow' });
             const created = await resolveTasksRepoForBoard(payload?._board).createTask(safePayload);
             if (payload.description) await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Создал задачу: ${created.title}`);
+            const board = payload?._board || 'main';
+            bot.sendMessage(chatId, formatTaskCreateSummary({ created, board }));
             return;
           }
           if (kind === 'notion.create_idea') {
             const created = await ideasRepo.createIdea(payload);
             if (payload.description) await ideasRepo.appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Добавил идею: ${created.title}`);
+            bot.sendMessage(chatId, formatIdeaCreateSummary({ created }));
             return;
           }
           if (kind === 'notion.create_social_post') {
             const created = await socialRepo.createPost(payload);
             if (payload.description) await socialRepo.appendDescription({ pageId: created.id, text: payload.description });
-            bot.sendMessage(chatId, `Готово. Добавил пост: ${created.title}`);
+            bot.sendMessage(chatId, formatSocialPostCreateSummary({ created }));
             return;
           }
           if (kind === 'notion.create_journal_entry') {
@@ -188,7 +193,7 @@ function createCallbackQueryHandler({
             const { description, ...rest } = payload || {};
             const created = await journalRepo.createEntry(rest);
             if (description) await journalRepo.appendDescription({ pageId: created.id, text: description });
-            bot.sendMessage(chatId, `Готово. Добавил запись в дневник: ${created.title}`);
+            bot.sendMessage(chatId, formatJournalEntryCreateSummary({ created }));
             return;
           }
           if (kind === 'notion.update_idea') {

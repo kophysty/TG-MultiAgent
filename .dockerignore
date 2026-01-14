@@ -1,0 +1,11 @@
+**/node_modules/
+data/
+.git/
+.github/
+.idea/
+.vscode/
+.cursor/
+*.log
+Thumbs.db
+.DS_Store
+

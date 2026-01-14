@@ -191,6 +191,7 @@ Telegram msg
 | `docs/roadmap/repo-structure.md` | Структура репозитория для агентов |
 | `docs/roadmap/responsibilities.md` | Разделение обязанностей (Core vs N8N vs Workers) |
 | `docs/devops/pitfalls.md` | Антипаттерны и как их избежать |
+| `docs/current/deploy.md` | Деплой в production (текущее состояние) |
 | `.cursor/plans/09_2026-01-12_subagents_orch_*.plan.md` | План по субагентам и оркестратору |
 | `.cursor/plans/10_2026-01-12_orchestrator_refactor_*.plan.md` | План по рефакторингу оркестратора |
 

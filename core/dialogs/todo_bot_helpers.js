@@ -1399,6 +1399,133 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
+function formatTaskCreateSummary({ created, board = 'main' }) {
+  const lines = [`Готово. Создал задачу: ${created.title}`];
+  lines.push(`База: Tasks (${board})`);
+
+  const tags = normalizeTagsForDisplay(created.tags || []);
+  if (tags.length) {
+    const tagDisplay = tags.join(', ');
+    lines.push(`Категория: ${tagDisplay}`);
+  } else {
+    lines.push('Категория: не указана');
+  }
+
+  if (created.dueDate) {
+    lines.push(`Срок: ${created.dueDate}`);
+  }
+  if (created.priority) {
+    lines.push(`Приоритет: ${created.priority}`);
+  }
+  if (created.status) {
+    lines.push(`Статус: ${created.status}`);
+  }
+  if (created.url) {
+    lines.push(`Ссылка: ${created.url}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatIdeaCreateSummary({ created }) {
+  const lines = [`Готово. Добавил идею: ${created.title}`];
+  lines.push('База: Ideas');
+
+  const categories = Array.isArray(created.categories) ? created.categories.filter(Boolean) : [];
+  if (categories.length) {
+    lines.push(`Категория: ${categories.join(', ')}`);
+  } else {
+    lines.push('Категория: не указана');
+  }
+
+  const tags = Array.isArray(created.tags) ? created.tags.filter(Boolean) : [];
+  if (tags.length) {
+    lines.push(`Теги: ${tags.join(', ')}`);
+  }
+  if (created.area) {
+    lines.push(`Area: ${created.area}`);
+  }
+  if (created.project) {
+    lines.push(`Project: ${created.project}`);
+  }
+  if (created.status) {
+    lines.push(`Статус: ${created.status}`);
+  }
+  if (created.priority) {
+    lines.push(`Приоритет: ${created.priority}`);
+  }
+  if (created.url) {
+    lines.push(`Ссылка: ${created.url}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatSocialPostCreateSummary({ created }) {
+  const lines = [`Готово. Добавил пост: ${created.title}`];
+  lines.push('База: Social');
+
+  const platforms = Array.isArray(created.platform) ? created.platform.filter(Boolean) : created.platform ? [created.platform] : [];
+  if (platforms.length) {
+    lines.push(`Платформа: ${platforms.join(', ')}`);
+  } else {
+    lines.push('Платформа: не указана');
+  }
+
+  if (created.status) {
+    lines.push(`Статус: ${created.status}`);
+  }
+  if (created.postDate) {
+    lines.push(`Дата поста: ${created.postDate}`);
+  }
+  const contentTypes = Array.isArray(created.contentType) ? created.contentType.filter(Boolean) : created.contentType ? [created.contentType] : [];
+  if (contentTypes.length) {
+    lines.push(`Тип: ${contentTypes.join(', ')}`);
+  }
+  if (created.postUrl) {
+    lines.push(`Post URL: ${created.postUrl}`);
+  }
+  if (created.url) {
+    lines.push(`Ссылка: ${created.url}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatJournalEntryCreateSummary({ created }) {
+  const lines = [`Готово. Добавил запись в дневник: ${created.title}`];
+  lines.push('База: Journal');
+
+  if (created.date) {
+    lines.push(`Дата: ${created.date}`);
+  } else {
+    lines.push('Дата: не указана');
+  }
+
+  if (created.type) {
+    lines.push(`Тип: ${created.type}`);
+  }
+  const topics = Array.isArray(created.topics) ? created.topics.filter(Boolean) : [];
+  if (topics.length) {
+    lines.push(`Topics: ${topics.join(', ')}`);
+  }
+  const context = Array.isArray(created.context) ? created.context.filter(Boolean) : [];
+  if (context.length) {
+    lines.push(`Context: ${context.join(', ')}`);
+  }
+  if (created.mood !== null && created.mood !== undefined) {
+    lines.push(`Mood: ${created.mood}`);
+  }
+  if (created.energy !== null && created.energy !== undefined) {
+    lines.push(`Energy: ${created.energy}`);
+  }
+  if (created.url) {
+    lines.push(`Ссылка: ${created.url}`);
+  }
+
+  return lines.join('\n');
+}
+
 module.exports = {
   isDebugEnabled,
   isAiEnabled,
@@ -1459,6 +1586,10 @@ module.exports = {
   findIdeasFuzzyEnhanced,
   findSocialPostsFuzzyEnhanced,
   findJournalEntriesFuzzyEnhanced,
+  formatTaskCreateSummary,
+  formatIdeaCreateSummary,
+  formatSocialPostCreateSummary,
+  formatJournalEntryCreateSummary,
 };
 
 

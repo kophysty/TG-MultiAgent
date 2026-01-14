@@ -58,11 +58,21 @@ Docker Compose лежит в `infra/docker-compose.yml`.
 - Внутри docker сети host Postgres это `postgres`, а не `localhost`. В prod compose мы принудительно задаем `POSTGRES_URL` с host `postgres`.
 - Для запуска нужны переменные окружения (обычно через `../.env`), включая токены Telegram и Notion.
 
-Запуск:
+Запуск (ручной):
 
 ```bash
 docker compose -f infra/docker-compose.prod.yml up -d --build
 ```
+
+Запуск (рекомендуется, с миграциями и проверками):
+
+```bash
+bash infra/deploy/prod_deploy.sh
+```
+
+Документация:
+
+- `docs/devops/deploy.md`
 
 ### Локальный Postgres (dev)
 

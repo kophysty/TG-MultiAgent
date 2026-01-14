@@ -26,6 +26,10 @@
 Эти команды доступны только чатам из `TG_ADMIN_CHAT_IDS`.
 
 - `/cmnds` (алиас: `/commands`) - показать список админских команд (включая диагностику)
+- `/healthcheck` (алиас: `/hc`) - healthcheck прямо из чата (Postgres + Notion). В Notion секции показываются хвосты DB ID (например `(...dbe7c)`) для быстрой сверки с `.env`.
+- `/healthcheck_json` - healthcheck (Postgres + Notion) в JSON (удобно для тикета)
+- `/restart_polling` - перезапуск Telegram polling в текущем процессе
+- `/restart_process confirm` - завершить процесс бота (нужен supervisor, например Docker restart policy)
 - `/model` - показать активные модели (AI, prefs extractor, STT) и подсказку по настройке
 - `/prefs_pg` - показать preferences строго из Postgres (по текущему чату)
 - `/prefs_rm <номер|key>` - выключить preference (active=false) и отправить это в Notion (удаление/очистка памяти)

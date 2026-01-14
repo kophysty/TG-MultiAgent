@@ -4,29 +4,29 @@ overview: "Подготовка проекта к прод деплою: исп�
 todos:
   - id: docker-core-deps
     content: Обновить Dockerfile-ы bot и worker, чтобы ставились зависимости core (npm ci в /app/core)
-    status: pending
+    status: completed
   - id: dockerignore
     content: Добавить .dockerignore в корень и исключить node_modules, data и прочие лишние директории
-    status: pending
+    status: completed
   - id: pg-migrations-runbook
     content: Описать и/или автоматизировать применение миграций Postgres перед стартом prod compose
-    status: pending
+    status: completed
   - id: admin-healthcheck-cmds
     content: Добавить admin команды /healthcheck(/hc) и /healthcheck_json в todo bot, переиспользовав core/runtime/healthcheck
-    status: pending
+    status: completed
   - id: admin-reboot-cmds
     content: Добавить admin команды /restart_polling и /restart_process confirm, добавить их в /cmnds
-    status: pending
+    status: completed
     dependencies:
       - admin-healthcheck-cmds
   - id: refactor-admin-module
     content: Вынести admin команды и диагностику из core/dialogs/todo_bot.js в отдельный модуль core/dialogs/todo_bot_admin.js
-    status: pending
+    status: completed
     dependencies:
       - admin-healthcheck-cmds
   - id: docs-and-version
     content: Обновить docs/current и devops доки, CHANGELOG/HISTORY/execution_history, bump версии todo_bot
-    status: pending
+    status: completed
     dependencies:
       - docker-core-deps
       - admin-healthcheck-cmds

@@ -53,5 +53,8 @@ Use: `execution_history/sprint_template.md`
 - `2026-01-12_prefs_delete_tools_and_sync.md` - Preferences: удаление/отключение (Notion delete/Active=false) и /prefs_rm, чтобы не было “воскрешения” из Postgres
 - `2026-01-13_notion_options_normalization.md` - Фикс валидации опций Notion (Status/Priority/Category) + расширение датасета тестов (v0.2.8)
 - `2026-01-14_p0_social_platform_and_archive_idea.md` - P0: Social platform (unsupported) уточнение + идемпотентный archive idea + меньше спама от устаревших inline кликов (v0.2.9)
+- `2026-01-14_predeploy_readiness.md` - Predeploy: Docker core deps + .dockerignore + admin команды healthcheck/restart (v0.2.10)
+- `2026-01-15_notion_create_summaries.md` - Summary после создания записей в Notion: детальная информация о созданных задачах, идеях, постах и записях дневника (v0.2.12)
+- `2026-01-15_deploy_runbook_migrations_healthcheck_dbid.md` - Deploy runbook + идемпотентные миграции + вывод хвостов Notion DB ID в healthcheck (v0.2.13)
 
 
