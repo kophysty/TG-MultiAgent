@@ -3,6 +3,8 @@
 ## 2026-01-15
 
 - Summary после создания записей в Notion: добавлены форматтеры `formatTaskCreateSummary`, `formatIdeaCreateSummary`, `formatSocialPostCreateSummary`, `formatJournalEntryCreateSummary` в `core/dialogs/todo_bot_helpers.js`. После создания задач, идей, постов и записей дневника бот теперь показывает детальную информацию: база, категория, статус, приоритет, даты, ссылка на Notion и т.д. Применено в `core/dialogs/todo_bot_executor.js` и `core/dialogs/todo_bot_callbacks.js` (включая путь после подтверждения dedup).
+- Voice: inline кнопка "Отмена" на статус сообщении во время скачивания, конвертации и распознавания voice. Нажатие отменяет текущую обработку и удаляет статусное сообщение без ответа в чат.
+- Voice: исправлено исчезновение inline кнопки "Отмена" при обновлении статус сообщения (переустанавливаем `reply_markup` при каждом `editMessageText`).
 - Deploy и ops:
   - Healthcheck: в Notion секции добавлен вывод хвостов DB ID для быстрой визуальной сверки.
   - Добавлены скрипты `infra/db/migrate.sh` (идемпотентные миграции) и `infra/deploy/prod_deploy.sh` (единый prod deploy flow).

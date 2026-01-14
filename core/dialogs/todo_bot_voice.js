@@ -24,6 +24,53 @@ const {
   isJournalUpdateIntent,
 } = require('./todo_bot_helpers');
 
+const VOICE_JOB_TTL_MS = 10 * 60 * 1000;
+const voiceJobsById = new Map(); // actionId -> job
+
+function cleanupVoiceJobs(now = Date.now()) {
+  for (const [id, job] of voiceJobsById.entries()) {
+    if (!job?.createdAt) {
+      voiceJobsById.delete(id);
+      continue;
+    }
+    if (now - job.createdAt > VOICE_JOB_TTL_MS) voiceJobsById.delete(id);
+  }
+}
+
+function registerVoiceJob(job) {
+  cleanupVoiceJobs();
+  voiceJobsById.set(job.actionId, job);
+  return job;
+}
+
+function cancelVoiceJobByActionId({ actionId }) {
+  const id = String(actionId || '').trim();
+  if (!id) return null;
+  const job = voiceJobsById.get(id) || null;
+  if (!job) return null;
+  job.cancelled = true;
+  try {
+    job.abortController?.abort();
+  } catch {}
+  return job;
+}
+
+function buildVoiceCancelKeyboard({ actionId }) {
+  const id = String(actionId || '').trim();
+  return {
+    reply_markup: {
+      inline_keyboard: [[{ text: 'Отмена', callback_data: `vc:${id}`.slice(0, 64) }]],
+    },
+  };
+}
+
+class VoiceCancelledError extends Error {
+  constructor() {
+    super('voice_cancelled');
+    this.code = 'VOICE_CANCELLED';
+  }
+}
+
 function renderVoiceStatus({ stage, transcriptPreview = null }) {
   // Keep it plain text (no Markdown) to avoid escaping issues.
   // Telegram doesn't allow styling the bubble itself, but emojis + concise text improve readability.
@@ -77,8 +124,24 @@ async function handleVoiceMessage({
     file_unique_id: msg.voice.file_unique_id || null,
   });
 
-  const statusMsg = await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'downloading' }));
+  const actionId = makeId(`${chatId}:${Date.now()}:voice:${msg.voice.file_unique_id || msg.voice.file_id || ''}`);
+  const abortController = new AbortController();
+  const job = registerVoiceJob({
+    actionId,
+    chatId,
+    statusMessageId: null,
+    abortController,
+    cancelled: false,
+    createdAt: Date.now(),
+  });
+
+  const throwIfCancelled = () => {
+    if (job.cancelled || abortController.signal.aborted) throw new VoiceCancelledError();
+  };
+
+  const statusMsg = await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'downloading' }), buildVoiceCancelKeyboard({ actionId }));
   const statusMessageId = statusMsg?.message_id;
+  job.statusMessageId = statusMessageId || null;
 
   let transcriptPreview = null;
   let didFinalizeStatus = false;
@@ -86,13 +149,18 @@ async function handleVoiceMessage({
   const finalizeStatus = async () => {
     if (didFinalizeStatus) return;
     didFinalizeStatus = true;
+    if (job.cancelled) return;
     if (!statusMessageId || !transcriptPreview) return;
     try {
-      await bot.editMessageText(renderVoiceStatus({ stage: 'done', transcriptPreview }), { chat_id: chatId, message_id: statusMessageId });
+      await bot.editMessageText(renderVoiceStatus({ stage: 'done', transcriptPreview }), {
+        chat_id: chatId,
+        message_id: statusMessageId,
+        reply_markup: { inline_keyboard: [] },
+      });
     } catch {
       // If we cannot edit the status message (rate limit, message deleted, etc), send a small fallback message.
       try {
-        await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'done', transcriptPreview }));
+        if (!job.cancelled) await bot.sendMessage(chatId, renderVoiceStatus({ stage: 'done', transcriptPreview }));
       } catch {}
     }
   };
@@ -103,25 +171,54 @@ async function handleVoiceMessage({
 
   try {
     stage = 'download';
-    const dl = await downloadTelegramFileToTmp({ bot, fileId: msg.voice.file_id, prefix: 'tg_voice', ext: 'ogg' });
+    throwIfCancelled();
+    const dl = await downloadTelegramFileToTmp({
+      bot,
+      fileId: msg.voice.file_id,
+      prefix: 'tg_voice',
+      ext: 'ogg',
+      signal: abortController.signal,
+    });
     oggPath = dl.outPath;
     debugLog('voice_downloaded', { chatId, bytes: fs.statSync(oggPath).size });
 
     if (statusMessageId)
-      await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'converting' }) });
+      await safeEditStatus({
+        bot,
+        chatId,
+        messageId: statusMessageId,
+        text: renderVoiceStatus({ stage: 'converting' }),
+        replyMarkup: buildVoiceCancelKeyboard({ actionId }).reply_markup,
+      });
     stage = 'convert';
-    const conv = await convertOggToWav16kMono({ inputPath: oggPath });
+    throwIfCancelled();
+    const conv = await convertOggToWav16kMono({ inputPath: oggPath, signal: abortController.signal });
     wavPath = conv.wavPath;
 
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'stt' }) });
+    if (statusMessageId)
+      await safeEditStatus({
+        bot,
+        chatId,
+        messageId: statusMessageId,
+        text: renderVoiceStatus({ stage: 'stt' }),
+        replyMarkup: buildVoiceCancelKeyboard({ actionId }).reply_markup,
+      });
     stage = 'stt';
-    const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang });
+    throwIfCancelled();
+    const stt = await transcribeWavWithOpenAI({ apiKey, wavPath, model: sttModel, language: lang, signal: abortController.signal });
     const transcript = stt.text;
 
     debugLog('voice_transcribed', { chatId, text_len: transcript.length, text_preview: transcript.slice(0, 80) });
 
     if (!transcript) {
-      if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'no_text' }) });
+      if (statusMessageId)
+        await safeEditStatus({
+          bot,
+          chatId,
+          messageId: statusMessageId,
+          text: renderVoiceStatus({ stage: 'no_text' }),
+          replyMarkup: { inline_keyboard: [] },
+        });
       return;
     }
 
@@ -179,7 +276,20 @@ async function handleVoiceMessage({
         .catch(() => {});
     }
 
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'planning' }) });
+    // Cancel button is meant for download/convert/stt stages. Remove it right before LLM calls.
+    if (statusMessageId) {
+      await safeEditStatus({
+        bot,
+        chatId,
+        messageId: statusMessageId,
+        text: renderVoiceStatus({ stage: 'planning' }),
+        replyMarkup: { inline_keyboard: [] },
+      });
+      try {
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: statusMessageId });
+      } catch {}
+    }
+    throwIfCancelled();
 
     // Voice transcript should go through the same planner->tools path as text messages.
     const allowedCategories = notionCategories.length ? notionCategories : ['Inbox'];
@@ -235,11 +345,13 @@ async function handleVoiceMessage({
 
       if (plan.type === 'tool') {
         if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'executing' }) });
+        throwIfCancelled();
         await executeToolPlan({ chatId, from, toolName: plan.tool.name, args: plan.tool.args, userText: transcript });
         await finalizeStatus();
         return;
       }
     } catch (e) {
+      if (job.cancelled || abortController.signal.aborted) throw new VoiceCancelledError();
       debugLog('planner_error', { source: 'voice', message: String(e?.message || e) });
       if (isJournalRelatedText(transcript)) {
         const toolName = isJournalListIntent(transcript)
@@ -307,6 +419,10 @@ async function handleVoiceMessage({
     const kb = buildAiConfirmKeyboard({ draftId });
     bot.sendMessage(chatId, formatAiTaskSummary(task), kb);
   } catch (e) {
+    if (e?.code === 'VOICE_CANCELLED' || e?.code === 'ABORT_ERR' || e?.code === 'ERR_CANCELED' || job.cancelled || abortController.signal.aborted) {
+      // Silent cancel: no messages, no status updates.
+      return;
+    }
     const safe = sanitizeErrorForLog(e);
     debugLog('voice_error', {
       chatId,
@@ -315,7 +431,14 @@ async function handleVoiceMessage({
       message: safe?.message || String(e?.message || e),
       status: e?.response?.status || null,
     });
-    if (statusMessageId) await safeEditStatus({ bot, chatId, messageId: statusMessageId, text: renderVoiceStatus({ stage: 'error' }) });
+    if (statusMessageId)
+      await safeEditStatus({
+        bot,
+        chatId,
+        messageId: statusMessageId,
+        text: renderVoiceStatus({ stage: 'error' }),
+        replyMarkup: { inline_keyboard: [] },
+      });
     const adminIds = String(process.env.TG_ADMIN_CHAT_IDS || '')
       .split(',')
       .map((x) => Number(String(x).trim()))
@@ -346,6 +469,15 @@ async function handleVoiceMessage({
       bot.sendMessage(chatId, 'Не получилось обработать voice. Попробуй еще раз или отправь текстом.');
     }
   } finally {
+    if (job.cancelled) {
+      // Best-effort: delete the status message if still present.
+      if (job.statusMessageId) {
+        try {
+          await bot.deleteMessage(chatId, job.statusMessageId);
+        } catch {}
+      }
+    }
+
     // Best-effort: always show the transcript preview, even if we returned early due to confirmation flows.
     try {
       await finalizeStatus();
@@ -356,9 +488,10 @@ async function handleVoiceMessage({
     try {
       if (wavPath) fs.unlinkSync(wavPath);
     } catch {}
+    voiceJobsById.delete(actionId);
   }
 }
 
-module.exports = { handleVoiceMessage };
+module.exports = { handleVoiceMessage, cancelVoiceJobByActionId };
 
 

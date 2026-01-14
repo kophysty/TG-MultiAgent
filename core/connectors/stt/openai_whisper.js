@@ -29,7 +29,7 @@ function buildErrHintFromResponse(data) {
   }
 }
 
-async function postTranscription({ apiKey, wavPath, model, language }) {
+async function postTranscription({ apiKey, wavPath, model, language, signal = null }) {
   if (!apiKey) throw new Error('OPENAI_API_KEY missing.');
   if (!wavPath) throw new Error('wavPath missing.');
 
@@ -46,10 +46,11 @@ async function postTranscription({ apiKey, wavPath, model, language }) {
     headers: { Authorization: `Bearer ${apiKey}`, ...form.getHeaders() },
     maxBodyLength: Infinity,
     timeout: 120_000,
+    signal: signal || undefined,
   });
 }
 
-async function transcribeWavWithOpenAI({ apiKey, wavPath, model = 'whisper-1', language = 'ru' }) {
+async function transcribeWavWithOpenAI({ apiKey, wavPath, model = 'whisper-1', language = 'ru', signal = null }) {
   // Some OpenAI keys/projects can restrict access to specific models or the whole audio endpoint.
   // Try a small fallback set to keep voice working without requiring immediate config changes.
   const candidates = uniqStrings([
@@ -64,9 +65,11 @@ async function transcribeWavWithOpenAI({ apiKey, wavPath, model = 'whisper-1', l
   for (const m of candidates) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const resp = await postTranscription({ apiKey, wavPath, model: m, language });
+      const resp = await postTranscription({ apiKey, wavPath, model: m, language, signal });
       return { text: String(resp.data || '').trim(), usedModel: m };
     } catch (e) {
+      if (signal && signal.aborted) throw e;
+      if (e?.code === 'ERR_CANCELED') throw e;
       lastErr = e;
       const status = e?.response?.status || null;
       const hint = buildErrHintFromResponse(e?.response?.data);

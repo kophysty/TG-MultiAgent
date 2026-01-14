@@ -20,6 +20,8 @@ const {
   formatJournalEntryCreateSummary,
 } = require('./todo_bot_helpers');
 
+const { cancelVoiceJobByActionId } = require('./todo_bot_voice');
+
 const crypto = require('crypto');
 const { PreferencesRepo } = require('../connectors/postgres/preferences_repo');
 const { MemorySuggestionsRepo } = require('../connectors/postgres/memory_suggestions_repo');
@@ -111,6 +113,23 @@ function createCallbackQueryHandler({
       } catch {
         // ignore security failures
       }
+    }
+
+    // Voice cancel: inline "Отмена" during voice download/convert/stt stages.
+    if (action && action.startsWith('vc:')) {
+      const actionId = String(action.slice(3) || '').trim();
+      try {
+        await bot.answerCallbackQuery(query.id);
+      } catch {}
+
+      const job = cancelVoiceJobByActionId({ actionId });
+      const msgId = job?.statusMessageId || query?.message?.message_id || null;
+      if (msgId) {
+        try {
+          await bot.deleteMessage(chatId, msgId);
+        } catch {}
+      }
+      return;
     }
 
     if (action && action.startsWith('tool:')) {

@@ -28,7 +28,7 @@ function isRetryableDownloadError(e) {
   return false;
 }
 
-async function downloadTelegramFileToTmp({ bot, fileId, prefix = 'tg_voice', ext = 'ogg' }) {
+async function downloadTelegramFileToTmp({ bot, fileId, prefix = 'tg_voice', ext = 'ogg', signal = null }) {
   const tmpDir = os.tmpdir();
   const outPath = path.join(tmpDir, makeTmpName(prefix, ext));
 
@@ -49,7 +49,7 @@ async function downloadTelegramFileToTmp({ bot, fileId, prefix = 'tg_voice', ext
       lastUrl = url;
 
       // eslint-disable-next-line no-await-in-loop
-      const resp = await axios.get(url, { responseType: 'stream', timeout: timeoutMs });
+      const resp = await axios.get(url, { responseType: 'stream', timeout: timeoutMs, signal: signal || undefined });
       // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve, reject) => {
         const ws = fs.createWriteStream(outPath);

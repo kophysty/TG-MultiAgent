@@ -23,9 +23,13 @@ function debugLog(event, fields = {}) {
   console.log(`[tg_debug] ${event}`, safeFields);
 }
 
-async function safeEditStatus({ bot, chatId, messageId, text }) {
+async function safeEditStatus({ bot, chatId, messageId, text, replyMarkup = null }) {
   try {
-    await bot.editMessageText(text, { chat_id: chatId, message_id: messageId });
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: replyMarkup || undefined,
+    });
   } catch {
     // Ignore edit failures (message deleted, rate limits, etc.).
   }
