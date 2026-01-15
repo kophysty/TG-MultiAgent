@@ -1403,6 +1403,45 @@ function buildPickPlatformKeyboard({ actionId, platforms }) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
+function pickShortTitleFromLongText({ text, maxLen = 120 }) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  const limit = Math.max(20, Number(maxLen) || 120);
+  if (!s) return '';
+  if (s.length <= limit) return s;
+
+  const boundaryCandidates = ['. ', '! ', '? ', '; ', ': ', ' - ', '\n'];
+  let cut = -1;
+  for (const b of boundaryCandidates) {
+    const idx = s.indexOf(b);
+    if (idx === -1) continue;
+    const end = idx + b.trim().length;
+    if (end > 0 && end <= limit) {
+      cut = end;
+      break;
+    }
+  }
+
+  const base = cut > 0 ? s.slice(0, cut).trim() : s.slice(0, Math.max(0, limit - 3)).trim();
+  return base.length < s.length ? `${base}...` : base;
+}
+
+function splitLongTaskTitleToDescription({ title, description = null, maxTitleLen = 120 }) {
+  const t = String(title || '').trim();
+  const d = description !== null && description !== undefined ? String(description || '').trim() : '';
+  const limit = Math.max(20, Number(maxTitleLen) || 120);
+  if (!t) return { title: t, description: d || null, didSplit: false };
+  if (t.length <= limit) return { title: t, description: d || null, didSplit: false };
+
+  const shortTitle = pickShortTitleFromLongText({ text: t, maxLen: limit });
+
+  const parts = [];
+  if (d) parts.push(d);
+  if (!d || !d.includes(t)) parts.push(t);
+  const nextDesc = parts.filter(Boolean).join('\n\n').trim();
+
+  return { title: shortTitle, description: nextDesc || null, didSplit: true };
+}
+
 function formatTaskCreateSummary({ created, board = 'main' }) {
   const lines = [`Готово. Создал задачу: ${created.title}`];
   lines.push(`База: Tasks (${board})`);
@@ -1426,6 +1465,34 @@ function formatTaskCreateSummary({ created, board = 'main' }) {
   }
   if (created.url) {
     lines.push(`Ссылка: ${created.url}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatTaskUpdateSummary({ updated, board = 'main' }) {
+  const lines = [`Готово. Обновил задачу: ${updated.title}`];
+  lines.push(`База: Tasks (${board})`);
+
+  const tags = normalizeTagsForDisplay(updated.tags || []);
+  if (tags.length) {
+    const tagDisplay = tags.join(', ');
+    lines.push(`Категория: ${tagDisplay}`);
+  } else {
+    lines.push('Категория: не указана');
+  }
+
+  if (updated.dueDate) {
+    lines.push(`Срок: ${updated.dueDate}`);
+  }
+  if (updated.priority) {
+    lines.push(`Приоритет: ${updated.priority}`);
+  }
+  if (updated.status) {
+    lines.push(`Статус: ${updated.status}`);
+  }
+  if (updated.url) {
+    lines.push(`Ссылка: ${updated.url}`);
   }
 
   return lines.join('\n');
@@ -1591,9 +1658,11 @@ module.exports = {
   findSocialPostsFuzzyEnhanced,
   findJournalEntriesFuzzyEnhanced,
   formatTaskCreateSummary,
+  formatTaskUpdateSummary,
   formatIdeaCreateSummary,
   formatSocialPostCreateSummary,
   formatJournalEntryCreateSummary,
+  splitLongTaskTitleToDescription,
 };
 
 

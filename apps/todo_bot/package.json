@@ -1,6 +1,6 @@
 {
   "name": "tg-multiagent-todo-bot",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "private": true,
   "description": "Telegram todo bot (polling) with Notion Tasks CRUD - migrated from TG-Notion-todo-bot.",
   "type": "commonjs",

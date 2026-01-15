@@ -56,3 +56,4 @@ node apps/evals/src/main.js --dataset apps/evals/ds/01_2026-01-06_planner_150.js
 
 - Отчеты пишутся в `data/evals/` и не попадают в git (папка в `.gitignore`).
 
+

@@ -59,3 +59,4 @@
 - Команды доступны только чатам из `TG_ADMIN_CHAT_IDS`.
 - `/errors` использует `event_log` (структурные записи, payload sanitized), а не stdout логи.
 
+

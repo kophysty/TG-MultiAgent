@@ -196,3 +196,4 @@ docker compose -f infra/docker-compose.prod.yml up -d
 - Технический runbook: [docs/devops/deploy.md](../devops/deploy.md)
 - Общая документация DevOps: [docs/devops/index.md](../devops/index.md)
 - Healthcheck CLI: [docs/current/commands.md](./commands.md#healthcheck)
+

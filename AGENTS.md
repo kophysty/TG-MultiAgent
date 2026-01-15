@@ -224,3 +224,4 @@ Telegram msg
 
 - **todo_bot:** v0.2.4 (см. `apps/todo_bot/package.json`)
 - При изменениях в агентах — bump version!
+

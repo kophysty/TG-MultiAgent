@@ -99,3 +99,4 @@ Energy: <energy> (если есть)
 
 - Unit tests: `npm test --prefix core` - все зеленые
 - Рекомендуется точечный e2e прогон на create кейсы через `apps/evals/src/e2e_runner.js` с небольшим датасетом, чтобы убедиться что summary появляется и поля выглядят ожидаемо.
+

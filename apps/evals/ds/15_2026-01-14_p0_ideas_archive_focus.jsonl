@@ -2,3 +2,4 @@
 {"id":"ideas_archive_focus_11111111","userText":"архивируй первую идею","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","lastShownIdeasList":[{"index":1,"id":"i1","title":"Добавить темную тему"}],"expected":{"type":"tool","toolName":"notion.archive_idea"}}
 {"id":"ideas_archive_focus_22222222","userText":"убери эту идею в архив","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","lastShownIdeasList":[{"index":1,"id":"i1","title":"Добавить темную тему"}],"expected":{"type":"tool","toolName":"notion.archive_idea"}}
 {"id":"ideas_archive_focus_33333333","userText":"удали первую идею","tz":"Europe/Moscow","nowIso":"2026-01-13T09:00:00.000Z","lastShownIdeasList":[{"index":1,"id":"i1","title":"Добавить темную тему"}],"expected":{"type":"tool","toolName":"notion.archive_idea"}}
+

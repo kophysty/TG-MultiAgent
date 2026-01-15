@@ -39,9 +39,11 @@ const {
   inferSocialWeekRangeFromText,
   inferTasksWeekRangeFromText,
   formatTaskCreateSummary,
+  formatTaskUpdateSummary,
   formatIdeaCreateSummary,
   formatSocialPostCreateSummary,
   formatJournalEntryCreateSummary,
+  splitLongTaskTitleToDescription,
 } = require('./todo_bot_helpers');
 
 const { getTraceId } = require('../runtime/trace_context');
@@ -314,7 +316,7 @@ function createToolExecutor({
         const tasksRepoForChat = board === 'test' && tasksRepoTest ? tasksRepoTest : tasksRepo;
         const { status: statusOptions, priority: priorityOptions } = await tasksRepoForChat.getOptions();
 
-        const title = String(args?.title || '').trim();
+        const rawTitle = String(args?.title || '').trim();
         const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
         const rawPriority = args?.priority ? String(args.priority) : null;
         const priority = pickBestOptionMatch({ input: rawPriority, options: priorityOptions }).value || null;
@@ -322,7 +324,10 @@ function createToolExecutor({
         const dueDate = inferredDue || (args?.dueDate ? normalizeDueDateInput({ dueDate: String(args.dueDate), tz }) : null);
         const rawStatus = args?.status ? String(args.status) : 'Idle';
         const status = pickBestOptionMatch({ input: rawStatus, options: statusOptions }).value || undefined;
-        const description = args?.description ? String(args.description) : null;
+        const rawDescription = args?.description ? String(args.description) : null;
+        const split = splitLongTaskTitleToDescription({ title: rawTitle, description: rawDescription, maxTitleLen: 120 });
+        const title = split.title;
+        const description = split.description;
 
         // Dedup check: if a similar active task exists, ask before creating a duplicate.
         const key = normalizeTitleKey(title);
@@ -1479,8 +1484,15 @@ function createToolExecutor({
           normPriority = norm.value || undefined;
         }
 
+        const rawTitle = args?.title ? String(args.title) : undefined;
+        const rawDescription = args?.description ? String(args.description) : null;
+        const split =
+          rawTitle !== undefined
+            ? splitLongTaskTitleToDescription({ title: rawTitle, description: rawDescription, maxTitleLen: 120 })
+            : { title: rawTitle, description: rawDescription, didSplit: false };
+
         const patch = {
-          title: args?.title ? String(args.title) : undefined,
+          title: split.title ? String(split.title) : undefined,
           tag: args?.tag ? normalizeCategoryInput(args.tag) : undefined,
           priority: normPriority,
           dueDate: args?.dueDate ? String(args.dueDate) : undefined,
@@ -1490,7 +1502,7 @@ function createToolExecutor({
         pendingToolActionByChatId.set(chatId, {
           id: actionId,
           kind: 'notion.update_task',
-          payload: { pageId: resolvedPageId, patch, _board: board },
+          payload: { pageId: resolvedPageId, patch, description: split.description || null, _board: board },
           createdAt: Date.now(),
         });
         bot.sendMessage(chatId, 'Применить изменения к задаче?', buildToolConfirmKeyboard({ actionId }));

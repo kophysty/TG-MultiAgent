@@ -182,3 +182,4 @@ test('isLikelyPreferenceText supports "запомнить/запомните"', 
   assert.equal(isLikelyPreferenceText('запомните что мы пишем в Telegram'), true);
 });
 
+

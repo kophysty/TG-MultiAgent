@@ -3,6 +3,8 @@
 ## 2026-01-15
 
 - Summary после создания записей в Notion: добавлены форматтеры `formatTaskCreateSummary`, `formatIdeaCreateSummary`, `formatSocialPostCreateSummary`, `formatJournalEntryCreateSummary` в `core/dialogs/todo_bot_helpers.js`. После создания задач, идей, постов и записей дневника бот теперь показывает детальную информацию: база, категория, статус, приоритет, даты, ссылка на Notion и т.д. Применено в `core/dialogs/todo_bot_executor.js` и `core/dialogs/todo_bot_callbacks.js` (включая путь после подтверждения dedup).
+- Tasks update: после обновления задачи бот показывает детальный summary (база, категория, срок, приоритет, статус, ссылка).
+- Tasks title: добавлено правило `title <= 120`, а длинный текст уходит в описание.
 - Voice: inline кнопка "Отмена" на статус сообщении во время скачивания, конвертации и распознавания voice. Нажатие отменяет текущую обработку и удаляет статусное сообщение без ответа в чат.
 - Voice: исправлено исчезновение inline кнопки "Отмена" при обновлении статус сообщения (переустанавливаем `reply_markup` при каждом `editMessageText`).
 - Deploy и ops:

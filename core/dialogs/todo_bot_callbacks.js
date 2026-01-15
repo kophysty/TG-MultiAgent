@@ -15,9 +15,11 @@ const {
   inferMoodEnergyFromText,
   extractNotionErrorInfo,
   formatTaskCreateSummary,
+  formatTaskUpdateSummary,
   formatIdeaCreateSummary,
   formatSocialPostCreateSummary,
   formatJournalEntryCreateSummary,
+  splitLongTaskTitleToDescription,
 } = require('./todo_bot_helpers');
 
 const { cancelVoiceJobByActionId } = require('./todo_bot_voice');
@@ -177,8 +179,13 @@ function createCallbackQueryHandler({
             return;
           }
           if (kind === 'notion.update_task') {
-            await resolveTasksRepoForBoard(payload?._board).updateTask({ pageId: payload.pageId, ...payload.patch });
-            bot.sendMessage(chatId, 'Готово. Обновил задачу.');
+            const board = payload?._board || 'main';
+            const updated = await resolveTasksRepoForBoard(payload?._board).updateTask({ pageId: payload.pageId, ...payload.patch });
+            const desc = payload?.description ? String(payload.description).trim() : '';
+            if (desc) {
+              await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: payload.pageId, text: desc });
+            }
+            bot.sendMessage(chatId, formatTaskUpdateSummary({ updated, board }));
             return;
           }
           if (kind === 'notion.append_description') {
@@ -189,8 +196,14 @@ function createCallbackQueryHandler({
           if (kind === 'notion.create_task') {
             const safePayload = { ...(payload || {}) };
             if (safePayload.dueDate) safePayload.dueDate = normalizeDueDateInput({ dueDate: safePayload.dueDate, tz: process.env.TG_TZ || 'Europe/Moscow' });
+            if (safePayload.title) {
+              const split = splitLongTaskTitleToDescription({ title: safePayload.title, description: safePayload.description || null, maxTitleLen: 120 });
+              safePayload.title = split.title;
+              safePayload.description = split.description;
+            }
             const created = await resolveTasksRepoForBoard(payload?._board).createTask(safePayload);
-            if (payload.description) await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: created.id, text: payload.description });
+            if (safePayload.description)
+              await resolveTasksRepoForBoard(payload?._board).appendDescription({ pageId: created.id, text: safePayload.description });
             const board = payload?._board || 'main';
             bot.sendMessage(chatId, formatTaskCreateSummary({ created, board }));
             return;

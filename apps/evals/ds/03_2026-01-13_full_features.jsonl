@@ -81,3 +81,4 @@
 {"id":"adv48","userText":"найди в дневнике \"\\'; DROP TABLE journal; --\"","expected":{"type":"tool","toolName":"notion.find_journal_entries"}}
 {"id":"adv49","userText":"запиши в дневник: очень длинный текст для стресс теста. lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum lorem ipsum","expected":{"type":"tool","toolName":"notion.create_journal_entry"}}
 {"id":"adv50","userText":"покажи задачи про 😀😀😀 и статус New","expected":{"type":"tool","toolName":"notion.list_tasks"}}
+
