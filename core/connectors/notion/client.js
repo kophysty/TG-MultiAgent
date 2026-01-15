@@ -4,8 +4,9 @@ const { getTraceId } = require('../../runtime/trace_context');
 const { sanitizeErrorForLog } = require('../../runtime/log_sanitize');
 
 function createNotionHttpClient({ notionToken, eventLogRepo = null, component = 'notion' }) {
+  const baseURL = process.env.NOTION_BASE_URL || 'https://api.notion.com/v1/';
   const http = axios.create({
-    baseURL: 'https://api.notion.com/v1/',
+    baseURL,
     headers: {
       Authorization: `Bearer ${notionToken}`,
       'Notion-Version': '2022-06-28',
