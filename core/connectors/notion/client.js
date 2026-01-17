@@ -16,53 +16,16 @@ function createNotionHttpClient({ notionToken, eventLogRepo = null, component = 
   });
 
   if (eventLogRepo) {
-    http.interceptors.request.use((config) => {
-      config.__tgMeta = { startMs: Date.now() };
-      eventLogRepo
-        .appendEvent({
-          traceId: getTraceId() || 'no-trace',
-          component,
-          event: 'notion_request',
-          level: 'info',
-          payload: {
-            method: String(config.method || 'get').toUpperCase(),
-            path: String(config.url || ''),
-          },
-        })
-        .catch(() => {});
-      return config;
-    });
-
+    // Log only errors - success requests/responses are too verbose
     http.interceptors.response.use(
-      (resp) => {
-        const startMs = resp?.config?.__tgMeta?.startMs || null;
-        const durationMs = startMs ? Date.now() - startMs : null;
-        eventLogRepo
-          .appendEvent({
-            traceId: getTraceId() || 'no-trace',
-            component,
-            event: 'notion_response',
-            level: 'info',
-            durationMs,
-            payload: {
-              status: resp.status,
-              method: String(resp?.config?.method || 'get').toUpperCase(),
-              path: String(resp?.config?.url || ''),
-            },
-          })
-          .catch(() => {});
-        return resp;
-      },
+      (resp) => resp,
       (err) => {
-        const startMs = err?.config?.__tgMeta?.startMs || null;
-        const durationMs = startMs ? Date.now() - startMs : null;
         eventLogRepo
           .appendEvent({
             traceId: getTraceId() || 'no-trace',
             component,
             event: 'notion_error',
             level: 'error',
-            durationMs,
             payload: {
               method: String(err?.config?.method || 'get').toUpperCase(),
               path: String(err?.config?.url || ''),
