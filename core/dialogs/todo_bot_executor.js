@@ -1512,10 +1512,21 @@ function createToolExecutor({
         pendingToolActionByChatId.set(chatId, {
           id: actionId,
           kind: 'notion.update_task',
-          payload: { pageId: resolvedPageId, patch, description: split.description || null, _board: board },
+          payload: { pageId: resolvedPageId, patch, description: split.description || null, title: resolvedTitle || null, _board: board },
           createdAt: Date.now(),
         });
-        bot.sendMessage(chatId, 'Применить изменения к задаче?', buildToolConfirmKeyboard({ actionId }));
+
+        // Build human-readable confirmation message
+        const changes = [];
+        if (patch.tag) changes.push(`категория → ${patch.tag}`);
+        if (patch.status) changes.push(`статус → ${patch.status}`);
+        if (patch.priority) changes.push(`приоритет → ${patch.priority}`);
+        if (patch.dueDate) changes.push(`дата → ${patch.dueDate}`);
+        if (patch.title) changes.push(`название → "${patch.title}"`);
+
+        const taskLine = resolvedTitle ? `Задача: "${resolvedTitle}"` : 'Задача найдена';
+        const changesLine = changes.length ? `Изменения: ${changes.join(', ')}` : 'Изменения не указаны';
+        bot.sendMessage(chatId, `${taskLine}\n${changesLine}\n\nПрименить?`, buildToolConfirmKeyboard({ actionId }));
         return;
       }
 
