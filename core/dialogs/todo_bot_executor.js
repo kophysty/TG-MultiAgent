@@ -1406,6 +1406,14 @@ function createToolExecutor({
         }
       }
 
+      // Multi mark_done: allow queryText to contain multiple task names.
+      if (toolName === 'notion.mark_done' && !resolvedPageId && args?.queryText) {
+        const parts = buildMultiQueryCandidates(args.queryText);
+        if (parts.length > 1) {
+          args = { ...args, queryText: parts[0], _queueQueries: parts.slice(1) };
+        }
+      }
+
       if (!resolvedPageId && args?.queryText) {
         const queryText = String(args.queryText).trim();
         const fuzzy = await findTasksFuzzyEnhanced({ notionRepo: tasksRepoForChat, queryText, limit: 10 });
@@ -1442,10 +1450,11 @@ function createToolExecutor({
 
       if (toolName === 'notion.mark_done') {
         const actionId = makeId(`${chatId}:${Date.now()}:notion.mark_done:${resolvedPageId}`);
+        const queue = Array.isArray(args?._queueQueries) && args._queueQueries.length ? args._queueQueries : undefined;
         pendingToolActionByChatId.set(chatId, {
           id: actionId,
           kind: 'notion.mark_done',
-          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _board: board },
+          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _queueQueries: queue, _board: board },
           createdAt: Date.now(),
         });
         const titleLine = resolvedTitle ? `Задача: "${resolvedTitle}".` : null;

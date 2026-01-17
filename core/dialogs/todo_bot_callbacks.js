@@ -161,6 +161,17 @@ function createCallbackQueryHandler({
             await resolveTasksRepoForBoard(payload?._board).markDone({ pageId: payload.pageId });
             const titleSuffix = payload?.title ? `: "${payload.title}"` : '';
             bot.sendMessage(chatId, `Готово. Пометил как выполнено${titleSuffix}.`);
+            if (Array.isArray(payload._queueQueries) && payload._queueQueries.length) {
+              const next = payload._queueQueries[0];
+              const rest = payload._queueQueries.slice(1);
+              await executeToolPlan({
+                chatId,
+                from: query?.from?.username || null,
+                toolName: 'notion.mark_done',
+                args: { queryText: next, _queueQueries: rest },
+                userText: String(next || ''),
+              });
+            }
             return;
           }
           if (kind === 'notion.move_to_deprecated') {
