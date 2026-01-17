@@ -45,6 +45,44 @@
 - Применить:
   - `bash infra/db/migrate.sh --apply`
 
+## Автоматический деплой с локальной машины
+
+Для быстрого деплоя без ручного SSH создан скрипт `scripts/deploy.sh`.
+
+### Настройка (один раз)
+
+1. SSH ключ уже создан: `~/.ssh/tg_multiagent_deploy`
+2. Ключ добавлен в `authorized_keys` на сервере
+
+### Использование
+
+```bash
+# Полный деплой (push + rebuild todo_bot + reminders_worker)
+./scripts/deploy.sh
+
+# Только бот (быстрее для мелких правок)
+./scripts/deploy.sh --only-bot
+
+# Пропустить push (если уже запушено)
+./scripts/deploy.sh --skip-push
+```
+
+### Что делает скрипт
+
+1. Проверяет, что нет незакоммиченных изменений
+2. Пушит в GitHub
+3. На сервере: `git pull`
+4. Пересобирает контейнеры: `docker compose up -d --build`
+5. Выводит статус и логи
+
+### Ручной SSH (если нужно)
+
+```bash
+ssh -i ~/.ssh/tg_multiagent_deploy root@45.80.70.145
+```
+
+---
+
 ## Типовые проблемы
 
 ### Healthcheck Notion fail, но бот "что-то делает"
