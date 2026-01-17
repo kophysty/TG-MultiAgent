@@ -159,12 +159,14 @@ function createCallbackQueryHandler({
         try {
           if (kind === 'notion.mark_done') {
             await resolveTasksRepoForBoard(payload?._board).markDone({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Пометил как выполнено.');
+            const titleSuffix = payload?.title ? `: "${payload.title}"` : '';
+            bot.sendMessage(chatId, `Готово. Пометил как выполнено${titleSuffix}.`);
             return;
           }
           if (kind === 'notion.move_to_deprecated') {
             await resolveTasksRepoForBoard(payload?._board).moveToDeprecated({ pageId: payload.pageId });
-            bot.sendMessage(chatId, 'Готово. Перенес в Deprecated.');
+            const titleSuffix = payload?.title ? `: "${payload.title}"` : '';
+            bot.sendMessage(chatId, `Готово. Перенес в Deprecated${titleSuffix}.`);
             if (Array.isArray(payload._queueQueries) && payload._queueQueries.length) {
               const next = payload._queueQueries[0];
               const rest = payload._queueQueries.slice(1);

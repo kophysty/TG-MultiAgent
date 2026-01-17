@@ -499,6 +499,7 @@ function registerAdminCommands({
       '- /history_show N - показать конспект sprint файла по номеру из /history_list (пример: /history_show 3)',
       '- /history_show 2026-01-05_test_tasks_mode_predeploy.md - показать конспект по имени файла',
       '- /history_summary N - summary за последние N дней (пример: /history_summary 3)',
+      '- /logs [hours] - экспорт логов (event_log + chat_messages) за последние N часов (по умолчанию 24), отправит JSON файлом',
       '',
       'Security:',
       '- /sessions [N]',
@@ -1163,6 +1164,77 @@ function registerAdminCommands({
     const targetChatId = Number(match[1]);
     await chatSecurity.unrevokeChat({ actorChatId, targetChatId });
     bot.sendMessage(actorChatId, `Ок. Вернул доступ для чата ${targetChatId}.`);
+  });
+
+  // /logs [hours] - экспорт логов (event_log + chat_messages) за последние N часов
+  bot.onText(/^\/logs(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(chatId)) {
+      bot.sendMessage(chatId, 'Команда доступна только админам.');
+      return;
+    }
+    if (!pgPool) {
+      bot.sendMessage(chatId, 'Postgres не настроен. Добавь POSTGRES_URL.');
+      return;
+    }
+
+    const hours = match && match[1] ? Number(match[1]) : 24;
+    const safeHours = Number.isFinite(hours) ? Math.max(1, Math.min(168, Math.trunc(hours))) : 24;
+    const sinceIso = new Date(Date.now() - safeHours * 3600_000).toISOString();
+
+    bot.sendMessage(chatId, `Собираю логи за последние ${safeHours}ч...`);
+
+    try {
+      // 1. event_log
+      const eventLogRes = await pgPool.query(
+        `SELECT id, ts, trace_id, chat_id, tg_update_id, tg_message_id, component, event, level, duration_ms, payload
+         FROM event_log
+         WHERE ts >= $1::timestamptz
+         ORDER BY ts DESC
+         LIMIT 1000`,
+        [sinceIso]
+      );
+
+      // 2. chat_messages
+      const chatMessagesRes = await pgPool.query(
+        `SELECT id, chat_id, role, text, tg_message_id, created_at
+         FROM chat_messages
+         WHERE created_at >= $1::timestamptz
+         ORDER BY created_at DESC
+         LIMIT 500`,
+        [sinceIso]
+      );
+
+      const exportData = {
+        exportedAt: new Date().toISOString(),
+        periodHours: safeHours,
+        sinceIso,
+        eventLog: {
+          count: eventLogRes.rows.length,
+          rows: eventLogRes.rows,
+        },
+        chatMessages: {
+          count: chatMessagesRes.rows.length,
+          rows: chatMessagesRes.rows,
+        },
+      };
+
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const filename = `logs_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
+
+      // Отправляем как документ
+      await bot.sendDocument(chatId, Buffer.from(jsonStr, 'utf8'), {}, { filename, contentType: 'application/json' });
+
+      const summary = [
+        `Логи за ${safeHours}ч:`,
+        `- event_log: ${eventLogRes.rows.length} записей`,
+        `- chat_messages: ${chatMessagesRes.rows.length} записей`,
+      ].join('\n');
+      bot.sendMessage(chatId, summary);
+    } catch (e) {
+      bot.sendMessage(chatId, `Ошибка при экспорте логов: ${String(e?.message || e)}`);
+    }
   });
 
   return { maybeHandleAdminChatMemoryNaturalLanguage };

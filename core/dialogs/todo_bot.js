@@ -2207,6 +2207,10 @@ async function registerTodoBot({
             payload: {
               type: plan?.type || null,
               tool: plan?.type === 'tool' ? plan?.tool?.name || null : null,
+              toolArgs: plan?.type === 'tool' ? plan?.tool?.args || null : null,
+              chatPreview: plan?.type === 'chat' ? oneLinePreview(plan?.chat?.message || '', 200) : null,
+              userTextPreview: oneLinePreview(text, 100),
+              hasWorkContext: Boolean(workContext),
             },
           })
           .catch(() => {});

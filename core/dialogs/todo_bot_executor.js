@@ -1445,10 +1445,11 @@ function createToolExecutor({
         pendingToolActionByChatId.set(chatId, {
           id: actionId,
           kind: 'notion.mark_done',
-          payload: { pageId: resolvedPageId, _board: board },
+          payload: { pageId: resolvedPageId, title: resolvedTitle || null, _board: board },
           createdAt: Date.now(),
         });
-        bot.sendMessage(chatId, 'Пометить задачу как выполненную?', buildToolConfirmKeyboard({ actionId }));
+        const titleLine = resolvedTitle ? `Задача: "${resolvedTitle}".` : null;
+        bot.sendMessage(chatId, [titleLine, 'Пометить задачу как выполненную?'].filter(Boolean).join('\n'), buildToolConfirmKeyboard({ actionId }));
         return;
       }
 
