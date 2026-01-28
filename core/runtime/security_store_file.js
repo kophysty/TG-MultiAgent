@@ -136,6 +136,50 @@ class FileSecurityStore {
     this._save(data);
   }
 
+  async setAllowlisted({ chatId, allowlisted, actorChatId }) {
+    const data = this._load();
+    const key = String(chatId);
+    const existing = data.chats[key] || null;
+
+    if (!existing) {
+      data.chats[key] = {
+        chat_id: Number(chatId),
+        first_seen_at: nowIso(),
+        last_seen_at: nowIso(),
+        chat_type: null,
+        chat_title: null,
+        last_from_user_id: null,
+        last_from_username: null,
+        revoked: false,
+        revoked_at: null,
+        revoked_by_chat_id: null,
+        revoked_reason: null,
+        allowlisted: Boolean(allowlisted),
+        allowlisted_at: allowlisted ? nowIso() : null,
+        allowlisted_by_chat_id: allowlisted ? Number(actorChatId) : null,
+      };
+    } else {
+      existing.allowlisted = Boolean(allowlisted);
+      existing.allowlisted_at = allowlisted ? nowIso() : null;
+      existing.allowlisted_by_chat_id = allowlisted ? Number(actorChatId) : null;
+      existing.last_seen_at = nowIso();
+      data.chats[key] = existing;
+    }
+
+    const auditEntry = {
+      ts: nowIso(),
+      actor_chat_id: actorChatId !== undefined && actorChatId !== null ? Number(actorChatId) : null,
+      action: allowlisted ? 'allowlist' : 'unallowlist',
+      target_chat_id: Number(chatId),
+      details: null,
+    };
+    data.audit = Array.isArray(data.audit) ? data.audit : [];
+    data.audit.unshift(auditEntry);
+    data.audit = data.audit.slice(0, 200);
+
+    this._save(data);
+  }
+
   async appendAudit({ actorChatId, action, targetChatId, details }) {
     const data = this._load();
     const auditEntry = {

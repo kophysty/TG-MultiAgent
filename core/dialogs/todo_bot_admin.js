@@ -504,6 +504,10 @@ function registerAdminCommands({
       'Security:',
       '- /sessions [N]',
       '- /security_status',
+      '- /allow <chatId>',
+      '- /allow_here',
+      '- /unallow <chatId>',
+      '- /unallow_here',
       '- /revoke <chatId> [reason]',
       '- /revoke_here [reason]',
       '- /unrevoke <chatId>',
@@ -1123,10 +1127,95 @@ function registerAdminCommands({
     }
     const rows = await chatSecurity.listSessions({ limit: 200 });
     const revokedCount = rows.filter((r) => Boolean(r.revoked)).length;
+    const allowlistedCount = rows.filter((r) => Boolean(r.allowlisted)).length;
+
+    let pgInfo = null;
+    try {
+      const cs = process.env.POSTGRES_URL || process.env.DATABASE_URL || '';
+      if (cs) {
+        const u = new URL(cs);
+        const db = String(u.pathname || '').replace(/^\//, '') || null;
+        const port = u.port ? String(u.port) : '5432';
+        pgInfo = `${u.hostname}:${port}${db ? `/${db}` : ''}`;
+      }
+    } catch {
+      pgInfo = null;
+    }
+
     bot.sendMessage(
       chatId,
-      [`Security status:`, `- backend: ${chatSecurity.backendName()}`, `- known chats: ${rows.length}`, `- revoked: ${revokedCount}`].join('\n')
+      [
+        `Security status:`,
+        `- backend: ${chatSecurity.backendName()}`,
+        `- postgres: ${pgInfo || '-'}`,
+        `- allowlist_mode: ${chatSecurity.allowlistMode || 'off'}`,
+        `- known chats: ${rows.length}`,
+        `- allowlisted: ${allowlistedCount}`,
+        `- revoked: ${revokedCount}`,
+      ].join('\n')
     );
+  });
+
+  bot.onText(/^\/allow_here\s*$/i, async (msg) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    try {
+      await chatSecurity.allowChat({ actorChatId, targetChatId: actorChatId });
+      bot.sendMessage(actorChatId, 'Ок. Этот чат добавлен в allowlist.');
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось добавить чат в allowlist. Ошибка: ${String(e?.message || e)}`);
+    }
+  });
+
+  bot.onText(/^\/allow\s+(\d+)\s*$/i, async (msg, match) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    const targetChatId = Number(match[1]);
+    try {
+      await chatSecurity.allowChat({ actorChatId, targetChatId });
+      bot.sendMessage(actorChatId, `Ок. Добавил чат ${targetChatId} в allowlist.`);
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось добавить чат в allowlist. Ошибка: ${String(e?.message || e)}`);
+    }
+  });
+
+  bot.onText(/^\/unallow_here\s*$/i, async (msg) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    try {
+      await chatSecurity.unallowChat({ actorChatId, targetChatId: actorChatId });
+      bot.sendMessage(actorChatId, 'Ок. Этот чат удален из allowlist.');
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось удалить чат из allowlist. Ошибка: ${String(e?.message || e)}`);
+    }
+  });
+
+  bot.onText(/^\/unallow\s+(\d+)\s*$/i, async (msg, match) => {
+    const actorChatId = msg.chat.id;
+    await chatSecurity.touchFromMsg(msg);
+    if (!chatSecurity.isAdminChat(actorChatId)) {
+      bot.sendMessage(actorChatId, 'Команда доступна только админам.');
+      return;
+    }
+    const targetChatId = Number(match[1]);
+    try {
+      await chatSecurity.unallowChat({ actorChatId, targetChatId });
+      bot.sendMessage(actorChatId, `Ок. Удалил чат ${targetChatId} из allowlist.`);
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось удалить чат из allowlist. Ошибка: ${String(e?.message || e)}`);
+    }
   });
 
   bot.onText(/^\/revoke_here(?:\s+(.+))?\s*$/i, async (msg, match) => {
@@ -1137,8 +1226,12 @@ function registerAdminCommands({
       return;
     }
     const reason = match && match[1] ? String(match[1]).trim() : null;
-    await chatSecurity.revokeChat({ actorChatId, targetChatId: actorChatId, reason });
-    bot.sendMessage(actorChatId, 'Ок. Этот чат отключен (revoked).');
+    try {
+      await chatSecurity.revokeChat({ actorChatId, targetChatId: actorChatId, reason });
+      bot.sendMessage(actorChatId, 'Ок. Этот чат отключен (revoked).');
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось отключить чат. Ошибка: ${String(e?.message || e)}`);
+    }
   });
 
   bot.onText(/^\/revoke\s+(\d+)(?:\s+(.+))?\s*$/i, async (msg, match) => {
@@ -1150,8 +1243,12 @@ function registerAdminCommands({
     }
     const targetChatId = Number(match[1]);
     const reason = match && match[2] ? String(match[2]).trim() : null;
-    await chatSecurity.revokeChat({ actorChatId, targetChatId, reason });
-    bot.sendMessage(actorChatId, `Ок. Отключил чат ${targetChatId}.`);
+    try {
+      await chatSecurity.revokeChat({ actorChatId, targetChatId, reason });
+      bot.sendMessage(actorChatId, `Ок. Отключил чат ${targetChatId}.`);
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось отключить чат ${targetChatId}. Ошибка: ${String(e?.message || e)}`);
+    }
   });
 
   bot.onText(/^\/unrevoke\s+(\d+)\s*$/i, async (msg, match) => {
@@ -1162,8 +1259,12 @@ function registerAdminCommands({
       return;
     }
     const targetChatId = Number(match[1]);
-    await chatSecurity.unrevokeChat({ actorChatId, targetChatId });
-    bot.sendMessage(actorChatId, `Ок. Вернул доступ для чата ${targetChatId}.`);
+    try {
+      await chatSecurity.unrevokeChat({ actorChatId, targetChatId });
+      bot.sendMessage(actorChatId, `Ок. Вернул доступ для чата ${targetChatId}.`);
+    } catch (e) {
+      bot.sendMessage(actorChatId, `Не получилось вернуть доступ для чата ${targetChatId}. Ошибка: ${String(e?.message || e)}`);
+    }
   });
 
   // /logs [hours] - экспорт логов (event_log + chat_messages) за последние N часов

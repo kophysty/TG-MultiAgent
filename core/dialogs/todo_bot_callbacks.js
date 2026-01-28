@@ -107,8 +107,9 @@ function createCallbackQueryHandler({
     if (chatSecurity) {
       try {
         await chatSecurity.touchFromCallback(query);
-        if (await chatSecurity.shouldBlockChat(chatId)) {
-          await chatSecurity.maybeReplyRevoked(chatId);
+        const blockReason = typeof chatSecurity.getBlockReason === 'function' ? await chatSecurity.getBlockReason(chatId) : null;
+        if (blockReason) {
+          await chatSecurity.maybeReplyBlocked(chatId, blockReason);
           bot.answerCallbackQuery(query.id);
           return;
         }
@@ -208,7 +209,17 @@ function createCallbackQueryHandler({
           }
           if (kind === 'notion.create_task') {
             const safePayload = { ...(payload || {}) };
-            if (safePayload.dueDate) safePayload.dueDate = normalizeDueDateInput({ dueDate: safePayload.dueDate, tz: process.env.TG_TZ || 'Europe/Moscow' });
+            // Normalize dueDate and optional dueDateEnd for Notion format.
+            if (safePayload.dueDate !== undefined) {
+              const tzName = process.env.TG_TZ || 'Europe/Moscow';
+              const start = safePayload.dueDate ? normalizeDueDateInput({ dueDate: String(safePayload.dueDate), tz: tzName }) : null;
+              const end =
+                safePayload.dueDateEnd !== undefined && safePayload.dueDateEnd !== null
+                  ? normalizeDueDateInput({ dueDate: String(safePayload.dueDateEnd), tz: tzName })
+                  : null;
+              safePayload.dueDate = start && end ? { start, end } : start;
+              delete safePayload.dueDateEnd;
+            }
             if (safePayload.title) {
               const split = splitLongTaskTitleToDescription({ title: safePayload.title, description: safePayload.description || null, maxTitleLen: 120 });
               safePayload.title = split.title;

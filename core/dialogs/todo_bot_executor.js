@@ -320,8 +320,11 @@ function createToolExecutor({
         const tag = args?.tag ? normalizeCategoryInput(args.tag) : null;
         const rawPriority = args?.priority ? String(args.priority) : null;
         const priority = pickBestOptionMatch({ input: rawPriority, options: priorityOptions }).value || null;
-        const inferredDue = inferDueDateFromUserText({ userText, tz });
-        const dueDate = inferredDue || (args?.dueDate ? normalizeDueDateInput({ dueDate: String(args.dueDate), tz }) : null);
+        // AI-first: if planner provided dueDate, trust it (after normalization) and do NOT override by heuristics.
+        const dueStart = args?.dueDate ? normalizeDueDateInput({ dueDate: String(args.dueDate), tz }) : null;
+        const dueEnd = args?.dueDateEnd ? normalizeDueDateInput({ dueDate: String(args.dueDateEnd), tz }) : null;
+        const inferredDue = !dueStart ? inferDueDateFromUserText({ userText, tz }) : null;
+        const dueDate = dueEnd && dueStart ? { start: dueStart, end: dueEnd } : dueStart || inferredDue || null;
         const rawStatus = args?.status ? String(args.status) : 'Idle';
         const status = pickBestOptionMatch({ input: rawStatus, options: statusOptions }).value || undefined;
         const rawDescription = args?.description ? String(args.description) : null;
@@ -1505,7 +1508,18 @@ function createToolExecutor({
           title: split.title ? String(split.title) : undefined,
           tag: args?.tag ? normalizeCategoryInput(args.tag) : undefined,
           priority: normPriority,
-          dueDate: args?.dueDate ? String(args.dueDate) : undefined,
+          dueDate:
+            args?.dueDate !== undefined
+              ? (() => {
+                  const start = args?.dueDate !== null ? normalizeDueDateInput({ dueDate: String(args.dueDate), tz }) : null;
+                  const end =
+                    args?.dueDateEnd !== undefined && args?.dueDateEnd !== null
+                      ? normalizeDueDateInput({ dueDate: String(args.dueDateEnd), tz })
+                      : null;
+                  if (start && end) return { start, end };
+                  return start;
+                })()
+              : undefined,
           status: normStatus,
         };
         const actionId = makeId(`${chatId}:${Date.now()}:notion.update_task:${resolvedPageId}`);

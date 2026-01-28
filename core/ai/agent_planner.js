@@ -67,6 +67,10 @@ function normalizeToolArgsByToolName(toolName, args) {
     if (out.tag === undefined && Array.isArray(out.tags) && out.tags.length) out.tag = out.tags[0];
     if (out.dueDate === undefined && out.due !== undefined) out.dueDate = out.due;
     if (out.dueDate === undefined && out.deadline !== undefined) out.dueDate = out.deadline;
+    if (out.dueDateEnd === undefined && out.dueEnd !== undefined) out.dueDateEnd = out.dueEnd;
+    if (out.dueDateEnd === undefined && out.end !== undefined) out.dueDateEnd = out.end;
+    if (out.dueDateEnd === undefined && out.due_end !== undefined) out.dueDateEnd = out.due_end;
+    if (out.dueDateEnd === undefined && out.endDate !== undefined) out.dueDateEnd = out.endDate;
     if (out.title === undefined && out.name !== undefined) out.title = out.name;
   }
 
@@ -139,12 +143,13 @@ function buildSystemPrompt({ allowedCategories }) {
     '- For list_tasks date ranges (like "на этой неделе/на следующей неделе"), use args.dueDateOnOrAfter and args.dueDateBefore (not dateOnOrAfter/dateBefore).',
     '- Relative dates like "сегодня/завтра/послезавтра" MUST be interpreted using the provided timezone and current time in the user message context.',
     '- If the user specifies a time (e.g. "сегодня в 15:00"), set dueDate to a full ISO datetime string (YYYY-MM-DDTHH:mm:ss+HH:MM) in that timezone. Do NOT invent a different day.',
+    '- If the user specifies a time range (e.g. "в 14:00 до 15:00", "с 14:00 до 15:00", "встреча 14-15"), set dueDate to the start datetime and set dueDateEnd to the end datetime (both in full ISO datetime format with timezone offset).',
     '- If user asks for completed tasks: set args.status="Done" or args.doneOnly=true.',
     '- If user asks to include completed tasks: set args.includeDone=true.',
     '- Use notion.find_tasks ONLY when user explicitly asks to find/search a task (RU: "найди", "поиск") OR when the user refers to ONE task by name without a show/list intent and you need to resolve it for a follow-up action.',
     '- If user refers by number, the bot may provide lastShownList; you can request "taskIndex" in args.',
-    '- notion.create_task supports args: title, tag, dueDate, status, priority, description.',
-    '- notion.update_task supports args: pageId OR queryText/taskIndex plus patch fields (title, tag, dueDate, status, priority) and may include description.',
+    '- notion.create_task supports args: title, tag, dueDate, dueDateEnd, status, priority, description.',
+    '- notion.update_task supports args: pageId OR queryText/taskIndex plus patch fields (title, tag, dueDate, dueDateEnd, status, priority) and may include description.',
     '',
     '- If user talks about ideas (RU: "идея", "идеи") use Ideas tools.',
     '  - list ideas: notion.list_ideas (args: category?, status?, queryText?, limit?)',

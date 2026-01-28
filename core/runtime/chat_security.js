@@ -12,6 +12,16 @@ function parseAdminChatIds() {
     .filter((n) => Number.isFinite(n));
 }
 
+function parseAllowlistMode() {
+  // off | warn | enforce
+  const raw = String(process.env.TG_SECURITY_ALLOWLIST_MODE || '').trim().toLowerCase();
+  if (!raw) return 'off';
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return 'off';
+  if (raw === 'warn') return 'warn';
+  if (raw === 'enforce') return 'enforce';
+  return 'off';
+}
+
 function pickStoreKind({ pgPool }) {
   const want = String(process.env.TG_SECURITY_STORE || 'auto').trim().toLowerCase();
   if (want === 'pg' || want === 'postgres') return pgPool ? 'pg' : 'file';
@@ -30,22 +40,27 @@ function nowHuman() {
 function formatChatLine(row) {
   const id = row.chat_id ?? row.chatId ?? row.chat_id;
   const revoked = Boolean(row.revoked);
+  const allowlisted = Boolean(row.allowlisted);
   const lastSeen = row.last_seen_at || row.lastSeenAt || row.last_seen_at || null;
   const title = row.chat_title || row.chatTitle || null;
   const uname = row.last_from_username || row.lastFromUsername || null;
-  const marker = revoked ? '[REVOKED]' : '';
+  const markers = [];
+  if (revoked) markers.push('[REVOKED]');
+  if (allowlisted) markers.push('[ALLOWED]');
+  const marker = markers.join('');
   return `${marker} chatId=${id} last_seen=${lastSeen || '?'} title=${title || '-'} user=${uname || '-'}`.trim();
 }
 
 function createChatSecurity({ bot, pgPool }) {
   const adminChatIds = parseAdminChatIds();
+  const allowlistMode = parseAllowlistMode();
   const kind = pickStoreKind({ pgPool });
   const store =
     kind === 'pg'
       ? new ChatSecurityRepo({ pool: pgPool })
       : new FileSecurityStore({ filePath: getDefaultFilePath() });
 
-  const revokedReplyTsByChatId = new Map();
+  const blockedReplyTsByChatId = new Map();
 
   function isAdminChat(chatId) {
     const id = Number(chatId);
@@ -83,6 +98,8 @@ function createChatSecurity({ bot, pgPool }) {
           `- type: ${chatType || '-'}`,
           `- title: ${chatTitle || '-'}`,
           `- from: ${fromUsername || '-'} (${fromUserId || '-'})`,
+          `- allowlisted: ${res.allowlisted ? 'true' : 'false'}`,
+          `- allowlist_mode: ${allowlistMode}`,
         ].join('\n')
       );
       await store.appendAudit({
@@ -106,18 +123,40 @@ function createChatSecurity({ bot, pgPool }) {
     return Boolean(row?.revoked);
   }
 
-  async function shouldBlockChat(chatId) {
-    if (isAdminChat(chatId)) return false;
-    return await isRevoked(chatId);
+  async function isAllowlisted(chatId) {
+    const row = await store.getChat({ chatId });
+    return Boolean(row?.allowlisted);
   }
 
-  async function maybeReplyRevoked(chatId) {
+  async function getBlockReason(chatId) {
+    if (isAdminChat(chatId)) return null;
+    const row = await store.getChat({ chatId });
+    if (row?.revoked) return 'revoked';
+    if (allowlistMode === 'enforce') {
+      if (row?.allowlisted) return null;
+      return 'not_allowed';
+    }
+    return null;
+  }
+
+  async function shouldBlockChat(chatId) {
+    return Boolean(await getBlockReason(chatId));
+  }
+
+  async function maybeReplyBlocked(chatId, reason) {
     const now = Date.now();
-    const last = revokedReplyTsByChatId.get(chatId) || 0;
+    const last = blockedReplyTsByChatId.get(chatId) || 0;
     if (now - last < 5 * 60 * 1000) return;
-    revokedReplyTsByChatId.set(chatId, now);
+    blockedReplyTsByChatId.set(chatId, now);
     try {
-      await bot.sendMessage(chatId, 'Этот чат отключен администратором. Если это ошибка, попроси админа сделать /unrevoke.');
+      if (reason === 'revoked') {
+        await bot.sendMessage(chatId, 'Этот чат отключен администратором. Если это ошибка, попроси админа сделать /unrevoke.');
+        return;
+      }
+      if (reason === 'not_allowed') {
+        await bot.sendMessage(chatId, 'Бот находится в разработке.');
+        return;
+      }
     } catch {}
   }
 
@@ -136,6 +175,18 @@ function createChatSecurity({ bot, pgPool }) {
     await notifyAdmins(`Unrevoke: chatId=${targetChatId} by adminChatId=${actorChatId}`);
   }
 
+  async function allowChat({ actorChatId, targetChatId }) {
+    if (typeof store.setAllowlisted !== 'function') throw new Error('setAllowlisted not supported by store');
+    await store.setAllowlisted({ chatId: targetChatId, allowlisted: true, actorChatId });
+    await notifyAdmins(`Allowlist: chatId=${targetChatId} by adminChatId=${actorChatId}`);
+  }
+
+  async function unallowChat({ actorChatId, targetChatId }) {
+    if (typeof store.setAllowlisted !== 'function') throw new Error('setAllowlisted not supported by store');
+    await store.setAllowlisted({ chatId: targetChatId, allowlisted: false, actorChatId });
+    await notifyAdmins(`Unallowlist: chatId=${targetChatId} by adminChatId=${actorChatId}`);
+  }
+
   function backendName() {
     return kind;
   }
@@ -143,14 +194,18 @@ function createChatSecurity({ bot, pgPool }) {
   return {
     adminChatIds,
     isAdminChat,
+    allowlistMode,
     backendName,
     touchFromMsg,
     touchFromCallback,
+    getBlockReason,
     shouldBlockChat,
-    maybeReplyRevoked,
+    maybeReplyBlocked,
     listSessions,
     revokeChat,
     unrevokeChat,
+    allowChat,
+    unallowChat,
   };
 }
 

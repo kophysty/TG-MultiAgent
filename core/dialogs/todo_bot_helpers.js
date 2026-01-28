@@ -86,6 +86,61 @@ function inferDateFromText({ userText, tz }) {
     return `${ru[3]}-${mm}-${dd}`;
   }
 
+  // Month names (RU) like "23 января" or "23 января 2026"
+  const months = [
+    [/январ/i, 1],
+    [/феврал/i, 2],
+    [/март/i, 3],
+    [/апрел/i, 4],
+    [/ма[йя]/i, 5],
+    [/июн/i, 6],
+    [/июл/i, 7],
+    [/август/i, 8],
+    [/сентябр/i, 9],
+    [/октябр/i, 10],
+    [/ноябр/i, 11],
+    [/декабр/i, 12],
+  ];
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const nowYmd = yyyyMmDdInTz({ tz });
+  const [nowY, nowM, nowD] = nowYmd.split('-').map((x) => Number(x));
+  if (![nowY, nowM, nowD].every((x) => Number.isFinite(x))) return null;
+
+  // Match patterns with month word. Examples:
+  // - "на 23 января"
+  // - "23-го января 2026"
+  // - "23 января 2026 года"
+  const m1 = t.match(/(?:^|[\s,])(\d{1,2})(?:\s*[-–]?\s*(?:е|ое|го|ого))?\s+([а-яё]+)(?:\s+(20\d{2}))?/i);
+  if (m1 && m1[1] && m1[2]) {
+    const day = Number(m1[1]);
+    if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+    let month = null;
+    for (const [re, mm] of months) {
+      if (re.test(m1[2])) {
+        month = mm;
+        break;
+      }
+    }
+    if (!Number.isFinite(month)) return null;
+
+    let year = m1[3] ? Number(m1[3]) : null;
+    if (year && !Number.isFinite(year)) year = null;
+
+    let finalY = year || nowY;
+    let finalM = month;
+    let finalD = day;
+
+    // If year not specified and the date already passed in current year, shift to next year.
+    if (!year) {
+      if (finalM < nowM || (finalM === nowM && finalD < nowD)) finalY = nowY + 1;
+    }
+
+    const maxDay = new Date(Date.UTC(finalY, finalM, 0)).getUTCDate();
+    if (!Number.isFinite(maxDay) || finalD > maxDay) return null;
+    return `${finalY}-${pad2(finalM)}-${pad2(finalD)}`;
+  }
+
   return null;
 }
 
@@ -94,8 +149,22 @@ function normalizeDueDateInput({ dueDate, tz }) {
   const raw = String(dueDate || '').trim();
   if (!raw) return null;
 
-  // Keep valid ISO date or datetime as-is (Notion accepts both).
-  if (/^\d{4}-\d{2}-\d{2}([tT ].*)?$/.test(raw)) return raw;
+  // Keep valid ISO date as-is.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // Keep datetime with explicit offset or Z as-is.
+  if (/^\d{4}-\d{2}-\d{2}[tT ]\d{2}:\d{2}(:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(raw)) return raw.replace(' ', 'T');
+
+  // Datetime without offset: interpret as local time in tz and convert to ISO with offset.
+  const m = raw.match(/^(\d{4}-\d{2}-\d{2})[tT ](\d{1,2})[:.](\d{2})(?::(\d{2}))?$/);
+  if (m) {
+    const dateYyyyMmDd = m[1];
+    const hh = Number(m[2]);
+    const mm = Number(m[3]);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    const iso = buildIsoDateTimeInTz({ dateYyyyMmDd, hour: hh, minute: mm, tz });
+    return iso || null;
+  }
 
   const inferred = inferDateFromText({ userText: raw, tz });
   if (inferred) return inferred;
@@ -120,6 +189,11 @@ function inferTimeFromText({ userText }) {
     t.match(/(?:^|\s)(?:в|на|к)\s*(\d{1,2})\s*(?:час|ч)(?:а|ов)?(?:\s|$)/);
 
   if (!m) return null;
+  // Avoid treating dates like "на 23 января" as time "23:00".
+  // If right after the matched number we see a month name, it's a date context.
+  const startIdx = m.index || 0;
+  const tail = t.slice(startIdx, Math.min(t.length, startIdx + (m[0]?.length || 0) + 24));
+  if (/(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i.test(tail)) return null;
   const hh = Number(m[1]);
   const mm = m[2] !== undefined ? Number(m[2]) : 0;
   if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
@@ -127,11 +201,11 @@ function inferTimeFromText({ userText }) {
   if (mm < 0 || mm > 59) return null;
 
   let hour = hh;
-  const tail = t.slice(Math.max(0, m.index || 0), Math.min(t.length, (m.index || 0) + m[0].length + 16));
-  const hasMorning = /(утра)/.test(tail) || /(утра)/.test(t);
-  const hasEvening = /(вечер|вечера)/.test(tail) || /(вечер|вечера)/.test(t);
-  const hasDay = /(дня)/.test(tail) || /(дня)/.test(t);
-  const hasNight = /(ноч|ночи)/.test(tail) || /(ноч|ночи)/.test(t);
+  const tail2 = t.slice(Math.max(0, m.index || 0), Math.min(t.length, (m.index || 0) + m[0].length + 16));
+  const hasMorning = /(утра)/.test(tail2) || /(утра)/.test(t);
+  const hasEvening = /(вечер|вечера)/.test(tail2) || /(вечер|вечера)/.test(t);
+  const hasDay = /(дня)/.test(tail2) || /(дня)/.test(t);
+  const hasNight = /(ноч|ночи)/.test(tail2) || /(ноч|ночи)/.test(t);
 
   if (hasEvening && hour < 12) hour += 12;
   if (hasDay && hour < 12) hour += 12;
@@ -1455,7 +1529,8 @@ function formatTaskCreateSummary({ created, board = 'main' }) {
   }
 
   if (created.dueDate) {
-    lines.push(`Срок: ${created.dueDate}`);
+    const end = created.dueEnd ? String(created.dueEnd) : '';
+    lines.push(`Срок: ${end ? `${created.dueDate} - ${end}` : created.dueDate}`);
   }
   if (created.priority) {
     lines.push(`Приоритет: ${created.priority}`);
@@ -1483,7 +1558,8 @@ function formatTaskUpdateSummary({ updated, board = 'main' }) {
   }
 
   if (updated.dueDate) {
-    lines.push(`Срок: ${updated.dueDate}`);
+    const end = updated.dueEnd ? String(updated.dueEnd) : '';
+    lines.push(`Срок: ${end ? `${updated.dueDate} - ${end}` : updated.dueDate}`);
   }
   if (updated.priority) {
     lines.push(`Приоритет: ${updated.priority}`);

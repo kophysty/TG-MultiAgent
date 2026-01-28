@@ -85,7 +85,23 @@ class NotionTasksRepo {
 
     // Due Date
     if (this._hasProp(schema, 'Due Date')) {
-      props['Due Date'] = { date: dueDate ? { start: dueDate } : null };
+      const toDateValue = (v) => {
+        if (v === null || v === undefined) return null;
+        if (typeof v === 'string') {
+          const s = String(v).trim();
+          return s ? { start: s } : null;
+        }
+        if (typeof v === 'object' && v) {
+          const start = v.start !== undefined && v.start !== null ? String(v.start).trim() : '';
+          const end = v.end !== undefined && v.end !== null ? String(v.end).trim() : '';
+          if (!start) return null;
+          const out = { start };
+          if (end) out.end = end;
+          return out;
+        }
+        return null;
+      };
+      props['Due Date'] = { date: toDateValue(dueDate) };
     }
 
     // Status
@@ -130,7 +146,26 @@ class NotionTasksRepo {
 
     // Due Date
     if (dueDate !== undefined && this._hasProp(schema, 'Due Date')) {
-      props['Due Date'] = { date: dueDate ? { start: dueDate } : null };
+      const toDateValue = (v) => {
+        if (v === null) return null; // explicit clear
+        if (v === undefined) return undefined;
+        if (typeof v === 'string') {
+          const s = String(v).trim();
+          return s ? { start: s } : null;
+        }
+        if (typeof v === 'object' && v) {
+          const start = v.start !== undefined && v.start !== null ? String(v.start).trim() : '';
+          const end = v.end !== undefined && v.end !== null ? String(v.end).trim() : '';
+          if (!start) return null;
+          const out = { start };
+          if (end) out.end = end;
+          return out;
+        }
+        return null;
+      };
+      const dv = toDateValue(dueDate);
+      props['Due Date'] = { date: dv === undefined ? undefined : dv };
+      if (props['Due Date'].date === undefined) delete props['Due Date'];
     }
 
     // Status
@@ -210,6 +245,7 @@ class NotionTasksRepo {
       status: props.Status?.status?.name || null,
       priority: props.Priority?.select?.name || null,
       dueDate: props['Due Date']?.date?.start || null,
+      dueEnd: props['Due Date']?.date?.end || null,
       pmd: typeof props.PMD?.number === 'number' ? props.PMD.number : null,
       tags,
     };

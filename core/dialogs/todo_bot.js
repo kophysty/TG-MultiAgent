@@ -1613,8 +1613,9 @@ async function registerTodoBot({
   const handleStart = async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     const cmd = String(msg.text || '').trim();
@@ -1651,8 +1652,9 @@ async function registerTodoBot({
   bot.onText(/\/reminders_on/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/reminders_on', from: msg.from?.username || null });
@@ -1671,8 +1673,9 @@ async function registerTodoBot({
   bot.onText(/\/reminders_off/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/reminders_off', from: msg.from?.username || null });
@@ -1691,8 +1694,9 @@ async function registerTodoBot({
   bot.onText(/^Тест задачи:\s*ВКЛ\s*$/i, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: 'test_tasks_on', from: msg.from?.username || null });
@@ -1707,8 +1711,9 @@ async function registerTodoBot({
   bot.onText(/^Тест задачи:\s*ВЫКЛ\s*$/i, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: 'test_tasks_off', from: msg.from?.username || null });
@@ -1719,8 +1724,9 @@ async function registerTodoBot({
   bot.onText(/\/struct/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/struct', from: msg.from?.username || null });
@@ -1743,8 +1749,9 @@ async function registerTodoBot({
   bot.onText(/\/addtask/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/addtask', from: msg.from?.username || null });
@@ -1756,8 +1763,9 @@ async function registerTodoBot({
   bot.onText(/\/list/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/list', from: msg.from?.username || null });
@@ -1811,8 +1819,9 @@ async function registerTodoBot({
   bot.onText(/\/today/, async (msg) => {
     const chatId = msg.chat.id;
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
     debugLog('incoming_command', { chatId, command: '/today', from: msg.from?.username || null });
@@ -1897,8 +1906,9 @@ async function registerTodoBot({
     }
 
     await chatSecurity.touchFromMsg(msg);
-    if (await chatSecurity.shouldBlockChat(chatId)) {
-      await chatSecurity.maybeReplyRevoked(chatId);
+    const blockReason = await chatSecurity.getBlockReason(chatId);
+    if (blockReason) {
+      await chatSecurity.maybeReplyBlocked(chatId, blockReason);
       return;
     }
 

@@ -66,23 +66,88 @@ class ChatSecurityRepo {
   }
 
   async setRevoked({ chatId, revoked, actorChatId, reason }) {
+    const cid = Number(chatId);
+    const isRevoked = Boolean(revoked);
+    const actor = actorChatId !== undefined && actorChatId !== null ? Number(actorChatId) : null;
+    const reasonText = reason ? String(reason) : null;
+
+    // Upsert so revoke works even if the chat row was not created yet.
     await this._pool.query(
       `
-      UPDATE chat_security_chats
-      SET revoked = $2,
-          revoked_at = CASE WHEN $2 = TRUE THEN NOW() ELSE NULL END,
-          revoked_by_chat_id = CASE WHEN $2 = TRUE THEN $3 ELSE NULL END,
-          revoked_reason = CASE WHEN $2 = TRUE THEN $4 ELSE NULL END,
-          last_seen_at = NOW()
-      WHERE chat_id = $1
+      INSERT INTO chat_security_chats (
+        chat_id,
+        first_seen_at,
+        last_seen_at,
+        revoked,
+        revoked_at,
+        revoked_by_chat_id,
+        revoked_reason
+      )
+      VALUES (
+        $1,
+        NOW(),
+        NOW(),
+        $2,
+        CASE WHEN $2 = TRUE THEN NOW() ELSE NULL END,
+        CASE WHEN $2 = TRUE THEN $3 ELSE NULL END,
+        CASE WHEN $2 = TRUE THEN $4 ELSE NULL END
+      )
+      ON CONFLICT (chat_id)
+      DO UPDATE SET
+        revoked = EXCLUDED.revoked,
+        revoked_at = EXCLUDED.revoked_at,
+        revoked_by_chat_id = EXCLUDED.revoked_by_chat_id,
+        revoked_reason = EXCLUDED.revoked_reason,
+        last_seen_at = NOW()
       `,
-      [Number(chatId), Boolean(revoked), actorChatId !== undefined ? Number(actorChatId) : null, reason ? String(reason) : null]
+      [cid, isRevoked, actor, reasonText]
     );
     await this.appendAudit({
       actorChatId,
       action: revoked ? 'revoke' : 'unrevoke',
       targetChatId: chatId,
       details: reason ? { reason: String(reason) } : null,
+    });
+  }
+
+  async setAllowlisted({ chatId, allowlisted, actorChatId }) {
+    const cid = Number(chatId);
+    const isAllowlisted = Boolean(allowlisted);
+    const actor = actorChatId !== undefined && actorChatId !== null ? Number(actorChatId) : null;
+
+    await this._pool.query(
+      `
+      INSERT INTO chat_security_chats (
+        chat_id,
+        first_seen_at,
+        last_seen_at,
+        allowlisted,
+        allowlisted_at,
+        allowlisted_by_chat_id
+      )
+      VALUES (
+        $1,
+        NOW(),
+        NOW(),
+        $2,
+        CASE WHEN $2 = TRUE THEN NOW() ELSE NULL END,
+        CASE WHEN $2 = TRUE THEN $3 ELSE NULL END
+      )
+      ON CONFLICT (chat_id)
+      DO UPDATE SET
+        allowlisted = EXCLUDED.allowlisted,
+        allowlisted_at = EXCLUDED.allowlisted_at,
+        allowlisted_by_chat_id = EXCLUDED.allowlisted_by_chat_id,
+        last_seen_at = NOW()
+      `,
+      [cid, isAllowlisted, actor]
+    );
+
+    await this.appendAudit({
+      actorChatId,
+      action: isAllowlisted ? 'allowlist' : 'unallowlist',
+      targetChatId: chatId,
+      details: null,
     });
   }
 
